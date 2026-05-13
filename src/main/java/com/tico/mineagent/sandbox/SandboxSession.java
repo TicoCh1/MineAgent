@@ -1,6 +1,8 @@
 package com.tico.mineagent.sandbox;
 
 import java.util.Collections;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -9,14 +11,22 @@ import java.util.Map;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 
+import com.tico.mineagent.clipboard.AgentClipboard;
+import com.tico.mineagent.history.AgentEditRecord;
+import com.tico.mineagent.mask.AgentMaskDefinition;
 import com.tico.mineagent.network.SandboxStatePayload;
 
 public final class SandboxSession {
+	private static final int MAX_HISTORY_RECORDS = 32;
 	private boolean toolEnabled;
 	private SandboxSelectorType selectorType = SandboxSelectorType.CUBOID;
 	private BlockPos primary;
 	private BlockPos secondary;
 	private final Map<String, BlockPos> anchors = new HashMap<>();
+	private final Map<String, AgentMaskDefinition> masks = new HashMap<>();
+	private final Deque<AgentEditRecord> undoHistory = new ArrayDeque<>();
+	private final Deque<AgentEditRecord> redoHistory = new ArrayDeque<>();
+	private AgentClipboard clipboard;
 
 	public boolean toolEnabled() {
 		return toolEnabled;
@@ -93,6 +103,69 @@ public final class SandboxSession {
 
 	public Map<String, BlockPos> anchors() {
 		return Collections.unmodifiableMap(anchors);
+	}
+
+	public void setMask(AgentMaskDefinition mask) {
+		masks.put(mask.name(), mask);
+	}
+
+	public AgentMaskDefinition mask(String name) {
+		return masks.get(AgentMaskDefinition.normalizeName(name));
+	}
+
+	public Map<String, AgentMaskDefinition> masks() {
+		return Collections.unmodifiableMap(masks);
+	}
+
+	public boolean removeMask(String name) {
+		return masks.remove(AgentMaskDefinition.normalizeName(name)) != null;
+	}
+
+	public void setClipboard(AgentClipboard clipboard) {
+		this.clipboard = clipboard;
+	}
+
+	public AgentClipboard clipboard() {
+		return clipboard;
+	}
+
+	public void recordEdit(AgentEditRecord record) {
+		if (record == null || record.empty()) {
+			return;
+		}
+		undoHistory.push(record);
+		redoHistory.clear();
+		while (undoHistory.size() > MAX_HISTORY_RECORDS) {
+			undoHistory.removeLast();
+		}
+	}
+
+	public AgentEditRecord popUndo() {
+		return undoHistory.pollFirst();
+	}
+
+	public AgentEditRecord popRedo() {
+		return redoHistory.pollFirst();
+	}
+
+	public void pushUndo(AgentEditRecord record) {
+		if (record != null && !record.empty()) {
+			undoHistory.push(record);
+		}
+	}
+
+	public void pushRedo(AgentEditRecord record) {
+		if (record != null && !record.empty()) {
+			redoHistory.push(record);
+		}
+	}
+
+	public int undoCount() {
+		return undoHistory.size();
+	}
+
+	public int redoCount() {
+		return redoHistory.size();
 	}
 
 	public BlockPos min() {
@@ -199,9 +272,13 @@ public final class SandboxSession {
 	}
 
 	public SandboxStatePayload toPayload() {
+		return toPayload(toolEnabled);
+	}
+
+	public SandboxStatePayload toPayload(boolean effectiveToolEnabled) {
 		boolean complete = hasCompleteBounds();
 		return new SandboxStatePayload(
-				toolEnabled,
+				effectiveToolEnabled,
 				selectorType.id(),
 				complete,
 				complete ? min() : BlockPos.ZERO,

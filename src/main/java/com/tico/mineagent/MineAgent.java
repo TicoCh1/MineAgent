@@ -17,6 +17,7 @@ public class MineAgent implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		MineAgentNetworking.registerPayloads();
+		MineAgentNetworking.registerServerReceivers();
 		MineAgentCommands.register();
 		SandboxToolEvents.register();
 

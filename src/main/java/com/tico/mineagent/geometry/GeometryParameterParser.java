@@ -20,6 +20,8 @@ public final class GeometryParameterParser {
 			value -> Component.literal("Unknown MineAgent coordinate anchor: " + value));
 	private static final DynamicCommandExceptionType INVALID_NUMBER = new DynamicCommandExceptionType(
 			value -> Component.literal("Invalid MineAgent numeric value: " + value));
+	private static final DynamicCommandExceptionType PLAYER_RELATIVE_COORDINATE = new DynamicCommandExceptionType(
+			value -> Component.literal("MineAgent does not allow player-relative '~' coordinates: " + value));
 
 	private GeometryParameterParser() {
 	}
@@ -36,6 +38,9 @@ public final class GeometryParameterParser {
 
 	private static ParsedBlockPos parseBlockPos(BlockPos base, SandboxSession session, String raw, List<String> warnings) throws CommandSyntaxException {
 		String value = raw.trim();
+		if (value.contains("~")) {
+			throw PLAYER_RELATIVE_COORDINATE.create(raw);
+		}
 		if (value.startsWith("@")) {
 			return parseAnchorRelative(session, value, warnings);
 		}
@@ -71,6 +76,14 @@ public final class GeometryParameterParser {
 			warnings.add("height was below 1 and was corrected to 1.");
 		}
 		return new ParsedInt(height, warnings);
+	}
+
+	public static ParsedInt parsePositiveInteger(String raw, String name) throws CommandSyntaxException {
+		ParsedInt parsed = parseRoundedInt(raw, name, false);
+		if (parsed.value() < 1) {
+			throw INVALID_NUMBER.create(name + " must be >= 1: " + raw);
+		}
+		return parsed;
 	}
 
 	public static ParsedDouble parseNonNegativeDouble(String raw, String name) throws CommandSyntaxException {
@@ -150,14 +163,6 @@ public final class GeometryParameterParser {
 		String part = raw.trim();
 		if (part.isEmpty()) {
 			throw INVALID_COORDINATE.create(fullValue);
-		}
-
-		if (part.startsWith("~")) {
-			String offset = part.substring(1);
-			if (offset.isEmpty()) {
-				return base;
-			}
-			return base + roundToInt(parseDouble(offset), axis + " offset in " + fullValue, warnings);
 		}
 
 		return roundToInt(parseDouble(part), axis + " coordinate in " + fullValue, warnings);

@@ -23,7 +23,7 @@ public final class SandboxToolEvents {
 			}
 
 			SandboxSession session = SandboxSessions.get(serverPlayer);
-			if (!session.toolEnabled()) {
+			if (!canUseSandboxTool(serverPlayer)) {
 				return InteractionResult.PASS;
 			}
 
@@ -47,7 +47,7 @@ public final class SandboxToolEvents {
 			}
 
 			SandboxSession session = SandboxSessions.get(serverPlayer);
-			if (!session.toolEnabled()) {
+			if (!canUseSandboxTool(serverPlayer)) {
 				return InteractionResult.PASS;
 			}
 
@@ -60,6 +60,10 @@ public final class SandboxToolEvents {
 
 	private static boolean isSandboxTool(net.minecraft.world.item.ItemStack stack, InteractionHand hand) {
 		return hand == InteractionHand.MAIN_HAND && stack.is(Items.NETHERITE_HOE);
+	}
+
+	private static boolean canUseSandboxTool(ServerPlayer player) {
+		return player.createCommandSourceStack().hasPermission(2) && SandboxSessions.effectiveToolEnabled(player);
 	}
 
 	private static String format(net.minecraft.core.BlockPos pos) {

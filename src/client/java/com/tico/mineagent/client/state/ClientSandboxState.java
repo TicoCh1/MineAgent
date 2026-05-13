@@ -38,6 +38,14 @@ public final class ClientSandboxState {
 		return complete;
 	}
 
+	public static BlockPos min() {
+		return min;
+	}
+
+	public static BlockPos max() {
+		return max;
+	}
+
 	public static AABB bounds() {
 		return new AABB(
 				min.getX(),
@@ -46,5 +54,18 @@ public final class ClientSandboxState {
 				max.getX() + 1.0,
 				max.getY() + 1.0,
 				max.getZ() + 1.0);
+	}
+
+	public static String summary() {
+		if (!complete) {
+			return "sandbox incomplete";
+		}
+		return "%d,%d,%d -> %d,%d,%d".formatted(
+				min.getX(),
+				min.getY(),
+				min.getZ(),
+				max.getX(),
+				max.getY(),
+				max.getZ());
 	}
 }

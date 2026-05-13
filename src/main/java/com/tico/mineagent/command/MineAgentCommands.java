@@ -1,6 +1,7 @@
 package com.tico.mineagent.command;
 
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
@@ -23,12 +24,18 @@ import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 
+import com.tico.mineagent.network.MineAgentNetworking;
+import com.tico.mineagent.network.GpuCaptureRequestPayload;
+import com.tico.mineagent.history.AgentEditRecord;
+import com.tico.mineagent.geometry.GeometryEditResult;
+import com.tico.mineagent.raycast.RaycastMode;
 import com.tico.mineagent.sandbox.SandboxSelectorType;
 import com.tico.mineagent.sandbox.SandboxSession;
 import com.tico.mineagent.sandbox.SandboxSessions;
@@ -51,6 +58,7 @@ public final class MineAgentCommands {
 
 	public static void register() {
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+			MineAgentNetworking.setCommandBuildContext(registryAccess);
 			registerRoot(dispatcher, registryAccess, "/mineagent");
 			registerRoot(dispatcher, registryAccess, "mineagent");
 		});
@@ -74,6 +82,10 @@ public final class MineAgentCommands {
 				.then(shift())
 				.then(outsetInset("outset", false))
 				.then(outsetInset("inset", true))
+				.then(raycast())
+				.then(gpuCapture())
+				.then(history("undo", true))
+				.then(history("redo", false))
 				.then(MineAgentGeometryCommands.anchor())
 				.then(MineAgentGeometryCommands.geometry(registryAccess)));
 	}
@@ -128,8 +140,145 @@ public final class MineAgentCommands {
 								.executes(context -> outsetInset(context, IntegerArgumentType.getInteger(context, "amount"), inset, false, true))));
 	}
 
+	private static LiteralArgumentBuilder<CommandSourceStack> raycast() {
+		return Commands.literal("raycast")
+				.executes(context -> requestRaycast(context, 70.0D, RaycastMode.SANDBOX))
+				.then(Commands.literal(RaycastMode.SANDBOX.id())
+						.executes(context -> requestRaycast(context, 70.0D, RaycastMode.SANDBOX)))
+				.then(Commands.literal(RaycastMode.FREE.id())
+						.executes(context -> requestRaycast(context, 70.0D, RaycastMode.FREE)))
+				.then(Commands.argument("fov_degrees", DoubleArgumentType.doubleArg(1.0D, 170.0D))
+						.executes(context -> requestRaycast(context, DoubleArgumentType.getDouble(context, "fov_degrees"), RaycastMode.SANDBOX))
+						.then(Commands.literal(RaycastMode.SANDBOX.id())
+								.executes(context -> requestRaycast(context, DoubleArgumentType.getDouble(context, "fov_degrees"), RaycastMode.SANDBOX)))
+						.then(Commands.literal(RaycastMode.FREE.id())
+								.executes(context -> requestRaycast(context, DoubleArgumentType.getDouble(context, "fov_degrees"), RaycastMode.FREE))));
+	}
+
+	private static LiteralArgumentBuilder<CommandSourceStack> gpuCapture() {
+		return Commands.literal("capture")
+				.then(Commands.literal("isometric")
+						.executes(context -> requestIsometricCapture(context, 512, 512, 60.0D))
+						.then(Commands.argument("width", IntegerArgumentType.integer(256, 1920))
+								.then(Commands.argument("height", IntegerArgumentType.integer(256, 1080))
+										.then(Commands.argument("fov_degrees", DoubleArgumentType.doubleArg(30.0D, 90.0D))
+												.executes(context -> requestIsometricCapture(
+														context,
+														IntegerArgumentType.getInteger(context, "width"),
+														IntegerArgumentType.getInteger(context, "height"),
+														DoubleArgumentType.getDouble(context, "fov_degrees")))))))
+				.then(Commands.literal("camera")
+						.then(Commands.argument("x", DoubleArgumentType.doubleArg())
+								.then(Commands.argument("y", DoubleArgumentType.doubleArg())
+										.then(Commands.argument("z", DoubleArgumentType.doubleArg())
+												.then(Commands.argument("yaw_degrees", DoubleArgumentType.doubleArg())
+														.then(Commands.argument("pitch_degrees", DoubleArgumentType.doubleArg(-90.0D, 90.0D))
+																.executes(context -> requestVirtualCameraCapture(context, 512, 512, 60.0D))
+																.then(Commands.argument("width", IntegerArgumentType.integer(256, 1920))
+																		.then(Commands.argument("height", IntegerArgumentType.integer(256, 1080))
+																				.then(Commands.argument("fov_degrees", DoubleArgumentType.doubleArg(30.0D, 90.0D))
+																						.executes(context -> requestVirtualCameraCapture(
+																								context,
+																								IntegerArgumentType.getInteger(context, "width"),
+																								IntegerArgumentType.getInteger(context, "height"),
+																								DoubleArgumentType.getDouble(context, "fov_degrees"))))))))))));
+	}
+
+	private static LiteralArgumentBuilder<CommandSourceStack> history(String name, boolean undo) {
+		return Commands.literal(name)
+				.executes(context -> applyHistory(context, 1, undo))
+				.then(Commands.argument("steps", IntegerArgumentType.integer(1))
+						.executes(context -> applyHistory(context, IntegerArgumentType.getInteger(context, "steps"), undo)));
+	}
+
 	private static int startPlaceholder(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
-		return MineAgentAgentCommands.showSetupHint(context);
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		MineAgentNetworking.openAgentUi(player);
+		return 1;
+	}
+
+	private static int requestRaycast(CommandContext<CommandSourceStack> context, double fovDegrees, RaycastMode mode) throws CommandSyntaxException {
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		if (mode == RaycastMode.SANDBOX) {
+			requireCompleteSandbox(player);
+		}
+		MineAgentNetworking.requestClientRaycast(player, fovDegrees, mode);
+		return 1;
+	}
+
+	private static int requestIsometricCapture(CommandContext<CommandSourceStack> context, int width, int height, double fovDegrees) throws CommandSyntaxException {
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		SandboxSession session = requireCompleteSandbox(player);
+		MineAgentNetworking.requestClientGpuCapture(player, new GpuCaptureRequestPayload(
+				0,
+				"sandbox_isometric",
+				width,
+				height,
+				fovDegrees,
+				0.0D,
+				0.0D,
+				0.0D,
+				0.0F,
+				0.0F,
+				session.min(),
+				session.max()));
+		return 1;
+	}
+
+	private static int requestVirtualCameraCapture(CommandContext<CommandSourceStack> context, int width, int height, double fovDegrees) throws CommandSyntaxException {
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		MineAgentNetworking.requestClientGpuCapture(player, new GpuCaptureRequestPayload(
+				0,
+				"virtual_camera",
+				width,
+				height,
+				fovDegrees,
+				DoubleArgumentType.getDouble(context, "x"),
+				DoubleArgumentType.getDouble(context, "y"),
+				DoubleArgumentType.getDouble(context, "z"),
+				(float) DoubleArgumentType.getDouble(context, "yaw_degrees"),
+				(float) DoubleArgumentType.getDouble(context, "pitch_degrees"),
+				BlockPos.ZERO,
+				BlockPos.ZERO));
+		return 1;
+	}
+
+	private static int applyHistory(CommandContext<CommandSourceStack> context, int steps, boolean undo) throws CommandSyntaxException {
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		SandboxSession session = SandboxSessions.get(player);
+		long candidates = 0L;
+		int changed = 0;
+		int unchanged = 0;
+		int applied = 0;
+		for (int i = 0; i < steps; i++) {
+			AgentEditRecord record = undo ? session.popUndo() : session.popRedo();
+			if (record == null) {
+				break;
+			}
+			GeometryEditResult result = undo ? record.undo((net.minecraft.server.level.ServerLevel) player.level()) : record.redo((net.minecraft.server.level.ServerLevel) player.level());
+			if (undo) {
+				session.pushRedo(record);
+			} else {
+				session.pushUndo(record);
+			}
+			applied++;
+			candidates += result.candidates();
+			changed += result.changed();
+			unchanged += result.unchanged();
+			if (result.hasAffectedBounds()) {
+				MineAgentNetworking.showAgentEditBounds(player, result.affectedMin(), result.affectedMax(), undo ? "undo" : "redo");
+			}
+			for (String warning : result.warnings()) {
+				player.sendSystemMessage(Component.literal("MineAgent " + (undo ? "undo" : "redo") + " warning: " + warning));
+			}
+		}
+		if (applied == 0) {
+			player.sendSystemMessage(Component.literal(undo ? "No MineAgent undo history is available." : "No MineAgent redo history is available."));
+			return 0;
+		}
+		SandboxSessions.sync(player);
+		player.sendSystemMessage(Component.literal("MineAgent " + (undo ? "undo" : "redo") + " applied " + applied + " record(s): " + changed + " changed, " + unchanged + " unchanged, " + candidates + " candidates."));
+		return applied;
 	}
 
 	private static int bindTool(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
@@ -138,7 +287,7 @@ public final class MineAgentCommands {
 		session.setToolEnabled(true);
 		ensureTool(player);
 		SandboxSessions.sync(player);
-		player.sendSystemMessage(Component.literal("MineAgent sandbox tool bound to netherite hoe. Left click sets point 1, right click sets point 2."));
+		player.sendSystemMessage(Component.literal("MineAgent sandbox tool bound to netherite hoe. In creative mode, netherite hoe is the default MineAgent sandbox tool even without binding. Left click sets point 1, right click sets point 2."));
 		return 1;
 	}
 

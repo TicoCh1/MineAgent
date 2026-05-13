@@ -1,5 +1,6 @@
 package com.tico.mineagent.client.render;
 
+import java.util.List;
 import java.util.OptionalDouble;
 import java.util.OptionalInt;
 
@@ -33,6 +34,8 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 import com.tico.mineagent.MineAgent;
+import com.tico.mineagent.client.capture.ClientGpuCaptureContext;
+import com.tico.mineagent.client.state.ClientAgentEditBoundsState;
 import com.tico.mineagent.client.state.ClientSandboxState;
 
 public final class SandboxBoundaryRenderer {
@@ -60,7 +63,12 @@ public final class SandboxBoundaryRenderer {
 
 	public static void register() {
 		WorldRenderEvents.BEFORE_DEBUG_RENDER.register(context -> {
-			if (!ClientSandboxState.complete()) {
+			if (ClientGpuCaptureContext.active()) {
+				return;
+			}
+			boolean showSandbox = ClientSandboxState.complete();
+			boolean showAgentEditBounds = ClientAgentEditBoundsState.visible();
+			if (!showSandbox && !showAgentEditBounds) {
 				return;
 			}
 
@@ -70,27 +78,43 @@ public final class SandboxBoundaryRenderer {
 			}
 
 			Vec3 camera = client.gameRenderer.getMainCamera().getPosition();
-			AABB box = ClientSandboxState.bounds();
-			renderThroughWalls(client, context, box, camera);
-			renderVisible(context, box, camera);
+			AABB sandboxBox = showSandbox ? ClientSandboxState.bounds() : null;
+			List<ClientAgentEditBoundsState.EditBounds> agentEditBounds = showAgentEditBounds ? ClientAgentEditBoundsState.entries() : List.of();
+			renderThroughWalls(client, context, sandboxBox, agentEditBounds, camera);
+			renderVisible(context, sandboxBox, agentEditBounds, camera);
 		});
 	}
 
-	private static void renderVisible(WorldRenderContext context, AABB box, Vec3 camera) {
+	private static void renderVisible(WorldRenderContext context, AABB sandboxBox, List<ClientAgentEditBoundsState.EditBounds> agentEditBounds, Vec3 camera) {
 		PoseStack.Pose pose = context.matrices().last();
 		VertexConsumer lines = context.consumers().getBuffer(RenderType.lines());
-		drawGrid(lines, pose, box, camera, 26, 190, 205, 115);
-		drawFrame(lines, pose, box.inflate(0.003), camera, 26, 242, 255, 255);
-		drawFrame(lines, pose, box.inflate(0.018), camera, 26, 242, 255, 230);
-		drawFrame(lines, pose, box.inflate(0.032), camera, 26, 242, 255, 200);
+		if (sandboxBox != null) {
+			drawGrid(lines, pose, sandboxBox, camera, 26, 190, 205, 115);
+			drawFrame(lines, pose, sandboxBox.inflate(0.003), camera, 26, 242, 255, 255);
+			drawFrame(lines, pose, sandboxBox.inflate(0.018), camera, 26, 242, 255, 230);
+			drawFrame(lines, pose, sandboxBox.inflate(0.032), camera, 26, 242, 255, 200);
+		}
+		for (ClientAgentEditBoundsState.EditBounds bounds : agentEditBounds) {
+			AABB agentEditBox = bounds.bounds();
+			drawFrame(lines, pose, agentEditBox.inflate(0.009), camera, 255, 220, 32, 255);
+			drawFrame(lines, pose, agentEditBox.inflate(0.024), camera, 255, 220, 32, 230);
+			drawFrame(lines, pose, agentEditBox.inflate(0.039), camera, 255, 220, 32, 200);
+		}
 	}
 
-	private static void renderThroughWalls(Minecraft client, WorldRenderContext context, AABB box, Vec3 camera) {
+	private static void renderThroughWalls(Minecraft client, WorldRenderContext context, AABB sandboxBox, List<ClientAgentEditBoundsState.EditBounds> agentEditBounds, Vec3 camera) {
 		BufferBuilder buffer = new BufferBuilder(THROUGH_WALL_ALLOCATOR, THROUGH_WALL_LINES.getVertexFormatMode(), THROUGH_WALL_LINES.getVertexFormat());
 		PoseStack.Pose pose = context.matrices().last();
-		drawGrid(buffer, pose, box, camera, 30, 178, 196, 38);
-		drawFrame(buffer, pose, box.inflate(0.006), camera, 26, 242, 255, 78);
-		drawFrame(buffer, pose, box.inflate(0.034), camera, 26, 242, 255, 42);
+		if (sandboxBox != null) {
+			drawGrid(buffer, pose, sandboxBox, camera, 30, 178, 196, 38);
+			drawFrame(buffer, pose, sandboxBox.inflate(0.006), camera, 26, 242, 255, 78);
+			drawFrame(buffer, pose, sandboxBox.inflate(0.034), camera, 26, 242, 255, 42);
+		}
+		for (ClientAgentEditBoundsState.EditBounds bounds : agentEditBounds) {
+			AABB agentEditBox = bounds.bounds();
+			drawFrame(buffer, pose, agentEditBox.inflate(0.012), camera, 255, 205, 32, 86);
+			drawFrame(buffer, pose, agentEditBox.inflate(0.040), camera, 255, 205, 32, 48);
+		}
 
 		MeshData mesh = buffer.buildOrThrow();
 		try {

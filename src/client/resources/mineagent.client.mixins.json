@@ -3,7 +3,12 @@
 	"package": "com.tico.mineagent.client.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"client": [
-		"ExampleClientMixin"
+		"CameraAccessor",
+		"CameraCaptureMixin",
+		"ExampleClientMixin",
+		"GameRendererCaptureMixin",
+		"MinecraftCaptureMixin",
+		"SpriteContentsAccessor"
 	],
 	"injectors": {
 		"defaultRequire": 1
