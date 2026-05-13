@@ -14,6 +14,9 @@ import com.tico.mineagent.client.capture.GpuCaptureImageSet;
 import com.tico.mineagent.client.gui.MineAgentControlScreen;
 import com.tico.mineagent.client.raycast.ClientRaycastCapture;
 import com.tico.mineagent.client.raycast.RaycastImageSet;
+import com.tico.mineagent.client.util.ClientDeferredTasks;
+import com.tico.mineagent.network.AgentClientSyncAckPayload;
+import com.tico.mineagent.network.AgentClientSyncRequestPayload;
 import com.tico.mineagent.network.GpuCaptureRequestPayload;
 import com.tico.mineagent.network.GpuCaptureResultPayload;
 import com.tico.mineagent.network.AgentUiConfigurePayload;
@@ -57,6 +60,7 @@ public final class ClientAgentUiState {
 			status = payload.status();
 			addLog(payload.level(), payload.message(), payload.detail());
 		}));
+		ClientPlayNetworking.registerGlobalReceiver(AgentClientSyncRequestPayload.ID, (payload, context) -> context.client().execute(() -> runClientSyncRequest(payload)));
 		ClientPlayNetworking.registerGlobalReceiver(RaycastRequestPayload.ID, (payload, context) -> context.client().execute(() -> runRaycastRequest(payload)));
 		ClientPlayNetworking.registerGlobalReceiver(GpuCaptureRequestPayload.ID, (payload, context) -> context.client().execute(() -> runGpuCaptureRequest(payload)));
 	}
@@ -163,6 +167,15 @@ public final class ClientAgentUiState {
 				result.cameraZ(),
 				"Raycast captured and displayed in the MineAgent UI. " + savedFilesSummary(result.localFiles()) + " Image pixels are attached to the next model request when this capture was requested by the agent.",
 				String.join("\n", result.localFiles())));
+	}
+
+	private static void runClientSyncRequest(AgentClientSyncRequestPayload payload) {
+		int ticks = Math.max(1, Math.min(40, payload.clientTicks()));
+		ClientDeferredTasks.afterClientTicks(ticks, () -> {
+			if (ClientPlayNetworking.canSend(AgentClientSyncAckPayload.ID)) {
+				ClientPlayNetworking.send(new AgentClientSyncAckPayload(payload.requestId()));
+			}
+		});
 	}
 
 	private static void runGpuCaptureRequest(GpuCaptureRequestPayload payload) {

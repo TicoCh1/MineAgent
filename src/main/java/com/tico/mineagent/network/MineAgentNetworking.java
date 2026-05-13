@@ -23,8 +23,10 @@ import com.tico.mineagent.raycast.RaycastMode;
 public final class MineAgentNetworking {
 	private static final AtomicInteger NEXT_RAYCAST_REQUEST_ID = new AtomicInteger();
 	private static final AtomicInteger NEXT_GPU_CAPTURE_REQUEST_ID = new AtomicInteger();
+	private static final AtomicInteger NEXT_CLIENT_SYNC_REQUEST_ID = new AtomicInteger();
 	private static final ConcurrentMap<Integer, CompletableFuture<RaycastResultPayload>> PENDING_RAYCASTS = new ConcurrentHashMap<>();
 	private static final ConcurrentMap<Integer, CompletableFuture<GpuCaptureResultPayload>> PENDING_GPU_CAPTURES = new ConcurrentHashMap<>();
+	private static final ConcurrentMap<Integer, CompletableFuture<Boolean>> PENDING_CLIENT_SYNCS = new ConcurrentHashMap<>();
 	private static CommandBuildContext commandBuildContext;
 
 	private MineAgentNetworking() {
@@ -35,8 +37,10 @@ public final class MineAgentNetworking {
 		PayloadTypeRegistry.playS2C().register(AgentUiStatePayload.ID, AgentUiStatePayload.CODEC);
 		PayloadTypeRegistry.playS2C().register(AgentUiLogPayload.ID, AgentUiLogPayload.CODEC);
 		PayloadTypeRegistry.playS2C().register(AgentEditBoundsPayload.ID, AgentEditBoundsPayload.CODEC);
+		PayloadTypeRegistry.playS2C().register(AgentClientSyncRequestPayload.ID, AgentClientSyncRequestPayload.CODEC);
 		PayloadTypeRegistry.playS2C().register(RaycastRequestPayload.ID, RaycastRequestPayload.CODEC);
 		PayloadTypeRegistry.playS2C().register(GpuCaptureRequestPayload.ID, GpuCaptureRequestPayload.CODEC);
+		PayloadTypeRegistry.playC2S().register(AgentClientSyncAckPayload.ID, AgentClientSyncAckPayload.CODEC);
 		PayloadTypeRegistry.playC2S().register(RaycastResultPayload.ID, RaycastResultPayload.CODEC);
 		PayloadTypeRegistry.playC2S().register(GpuCaptureResultPayload.ID, GpuCaptureResultPayload.CODEC);
 		PayloadTypeRegistry.playC2S().register(AgentUiConfigurePayload.ID, AgentUiConfigurePayload.CODEC);
@@ -50,6 +54,7 @@ public final class MineAgentNetworking {
 		ServerPlayNetworking.registerGlobalReceiver(AgentUiStartPayload.ID, MineAgentNetworking::handleStart);
 		ServerPlayNetworking.registerGlobalReceiver(AgentUiStopPayload.ID, MineAgentNetworking::handleStop);
 		ServerPlayNetworking.registerGlobalReceiver(AgentUiContinuePayload.ID, MineAgentNetworking::handleContinue);
+		ServerPlayNetworking.registerGlobalReceiver(AgentClientSyncAckPayload.ID, MineAgentNetworking::handleClientSyncAck);
 		ServerPlayNetworking.registerGlobalReceiver(RaycastResultPayload.ID, MineAgentNetworking::handleRaycastResult);
 		ServerPlayNetworking.registerGlobalReceiver(GpuCaptureResultPayload.ID, MineAgentNetworking::handleGpuCaptureResult);
 	}
@@ -94,6 +99,19 @@ public final class MineAgentNetworking {
 		if (ServerPlayNetworking.canSend(player, AgentEditBoundsPayload.ID)) {
 			ServerPlayNetworking.send(player, new AgentEditBoundsPayload(false, BlockPos.ZERO, BlockPos.ZERO, ""));
 		}
+	}
+
+	public static CompletableFuture<Boolean> requestClientWorldSyncForAgent(ServerPlayer player, int clientTicks) {
+		if (!ServerPlayNetworking.canSend(player, AgentClientSyncRequestPayload.ID)) {
+			return CompletableFuture.completedFuture(false);
+		}
+
+		int requestId = NEXT_CLIENT_SYNC_REQUEST_ID.incrementAndGet();
+		CompletableFuture<Boolean> future = new CompletableFuture<>();
+		PENDING_CLIENT_SYNCS.put(requestId, future);
+		future.orTimeout(10, TimeUnit.SECONDS).whenComplete((result, throwable) -> PENDING_CLIENT_SYNCS.remove(requestId));
+		ServerPlayNetworking.send(player, new AgentClientSyncRequestPayload(requestId, clientTicks));
+		return future;
 	}
 
 	public static void requestClientRaycast(ServerPlayer player, double fovDegrees, RaycastMode mode) {
@@ -258,6 +276,13 @@ public final class MineAgentNetworking {
 			sendAgentLog(player, "warn", "MineAgent has no pending continuation request.");
 		}
 		sendAgentState(player);
+	}
+
+	private static void handleClientSyncAck(AgentClientSyncAckPayload payload, ServerPlayNetworking.Context context) {
+		CompletableFuture<Boolean> future = PENDING_CLIENT_SYNCS.remove(payload.requestId());
+		if (future != null) {
+			future.complete(true);
+		}
 	}
 
 	private static void handleRaycastResult(RaycastResultPayload payload, ServerPlayNetworking.Context context) {

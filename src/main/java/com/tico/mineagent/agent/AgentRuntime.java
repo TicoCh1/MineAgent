@@ -44,6 +44,7 @@ public final class AgentRuntime {
 	private static final int MAX_BATCH_OPERATIONS = 16;
 	private static final int MAX_BATCH_QUERY_CALLS = 16;
 	private static final int MAX_OPERATIONS_PER_CAPTURE = 4;
+	private static final int CLIENT_WORLD_SETTLE_TICKS_AFTER_EDIT = 6;
 	private static final Gson PRETTY_GSON = new GsonBuilder().setPrettyPrinting().create();
 	private final ExecutorService executor = Executors.newCachedThreadPool(new AgentThreadFactory());
 	private final ConcurrentMap<UUID, RunningAgent> runningAgents = new ConcurrentHashMap<>();
@@ -300,6 +301,7 @@ public final class AgentRuntime {
 
 		List<AgentToolResult> results = new ArrayList<>();
 		String failedNonQueryTool = null;
+		boolean clientWorldMayNeedSettlement = false;
 		for (AgentToolCall call : calls) {
 			runLog.event("tool_call", toolCallData(call));
 			sendDetail(server, playerId, "tool", "Calling tool: " + call.name(), pretty(call.arguments()));
@@ -309,11 +311,22 @@ public final class AgentRuntime {
 				result = AgentToolResult.error(call, "Batch rejected by MineAgent policy before execution: " + validation.message());
 			} else if (failedNonQueryTool != null && !isQueryTool(toolsByName, call)) {
 				result = AgentToolResult.error(call, "Skipped because previous non-query operation failed in this batch: " + failedNonQueryTool + ". Query tools may still run, but edit/capture/session-changing calls after a failure are not executed.");
+			} else if (clientWorldMayNeedSettlement && requiresSettledClientWorldBeforeCall(toolsByName, call)) {
+				ClientSyncResult sync = waitForClientWorldSettlement(server, playerId, call, runLog);
+				clientWorldMayNeedSettlement = !sync.ok();
+				if (!sync.ok() && isCaptureTool(call.name())) {
+					result = AgentToolResult.error(call, "Skipped capture because the client did not confirm that prior block edits were received/render-settled: " + sync.message());
+				} else {
+					result = executeToolCall(server, playerId, registryAccess, toolsByName, call);
+				}
 			} else {
 				result = executeToolCall(server, playerId, registryAccess, toolsByName, call);
 			}
 
 			runLog.event("tool_result", toolResultData(result));
+			if (result.ok() && isWorldChangingTool(call.name())) {
+				clientWorldMayNeedSettlement = true;
+			}
 			if (!result.ok() && failedNonQueryTool == null && !isQueryTool(toolsByName, call)) {
 				failedNonQueryTool = call.name();
 			}
@@ -413,10 +426,81 @@ public final class AgentRuntime {
 		};
 	}
 
+	private static boolean isWorldChangingTool(String toolName) {
+		return switch (toolName) {
+			case "mineagent_set_block",
+					"mineagent_box_corners",
+					"mineagent_box_origin",
+					"mineagent_ellipsoid_center",
+					"mineagent_ellipsoid_box",
+					"mineagent_cylinder",
+					"mineagent_line",
+					"mineagent_curve",
+					"mineagent_replace",
+					"mineagent_move",
+					"mineagent_paste",
+					"mineagent_stack",
+					"mineagent_undo",
+					"mineagent_redo" -> true;
+			default -> false;
+		};
+	}
+
+	private static boolean requiresSettledClientWorldBeforeCall(Map<String, AgentTool> toolsByName, AgentToolCall call) {
+		return isCaptureTool(call.name()) || isQueryTool(toolsByName, call);
+	}
+
 	private static String captureToolNames() {
 		return MineAgentToolRegistry.CLIENT_RAYCAST_TOOL + ", "
 				+ MineAgentToolRegistry.CLIENT_VIRTUAL_CAMERA_TOOL + ", or "
 				+ MineAgentToolRegistry.CLIENT_SANDBOX_ISOMETRIC_TOOL;
+	}
+
+	private ClientSyncResult waitForClientWorldSettlement(MinecraftServer server, UUID playerId, AgentToolCall call, AgentRunLogger runLog) {
+		sendDetail(
+				server,
+				playerId,
+				"ui",
+				"Waiting for client world/render sync before: " + call.name(),
+				"MineAgent is waiting for the client to process prior block updates and a short render-tick buffer before running this observation/query.");
+
+		CompletableFuture<ClientSyncResult> future = new CompletableFuture<>();
+		server.execute(() -> {
+			ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+			if (player == null) {
+				future.complete(new ClientSyncResult(false, "Player is no longer online."));
+				return;
+			}
+			MineAgentNetworking.requestClientWorldSyncForAgent(player, CLIENT_WORLD_SETTLE_TICKS_AFTER_EDIT)
+					.whenComplete((synced, throwable) -> {
+						if (throwable != null) {
+							future.complete(new ClientSyncResult(false, throwable.getMessage()));
+							return;
+						}
+						if (!Boolean.TRUE.equals(synced)) {
+							future.complete(new ClientSyncResult(false, "Client did not advertise the MineAgent sync barrier channel."));
+							return;
+						}
+						future.complete(new ClientSyncResult(true, "Client acknowledged prior packets after " + CLIENT_WORLD_SETTLE_TICKS_AFTER_EDIT + " client tick(s)."));
+					});
+		});
+
+		ClientSyncResult result;
+		try {
+			result = future.get(12, TimeUnit.SECONDS);
+		} catch (TimeoutException exception) {
+			result = new ClientSyncResult(false, "Timed out after 12 seconds while waiting for client sync.");
+		} catch (Exception exception) {
+			result = new ClientSyncResult(false, exception.getMessage());
+		}
+
+		JsonObject data = new JsonObject();
+		data.addProperty("before_tool", call.name());
+		data.addProperty("ok", result.ok());
+		data.addProperty("message", result.message());
+		data.addProperty("client_ticks", CLIENT_WORLD_SETTLE_TICKS_AFTER_EDIT);
+		runLog.event("client_world_sync", data);
+		return result;
 	}
 
 	private AgentToolResult executeToolCall(MinecraftServer server, UUID playerId, CommandBuildContext registryAccess, Map<String, AgentTool> toolsByName, AgentToolCall call) {
@@ -1104,5 +1188,8 @@ public final class AgentRuntime {
 		private static BatchValidation error(boolean allowQueries, String message) {
 			return new BatchValidation(false, allowQueries, message);
 		}
+	}
+
+	private record ClientSyncResult(boolean ok, String message) {
 	}
 }

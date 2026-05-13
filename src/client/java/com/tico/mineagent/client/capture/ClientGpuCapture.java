@@ -24,6 +24,7 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 import com.tico.mineagent.MineAgent;
+import com.tico.mineagent.client.util.ClientDeferredTasks;
 import com.tico.mineagent.network.GpuCaptureRequestPayload;
 
 public final class ClientGpuCapture {
@@ -34,6 +35,7 @@ public final class ClientGpuCapture {
 	private static final int MIN_HEIGHT = 256;
 	private static final int MAX_WIDTH = 1920;
 	private static final int MAX_HEIGHT = 1080;
+	private static final int CAPTURE_SETTLE_TICKS = 2;
 
 	private ClientGpuCapture() {
 	}
@@ -41,7 +43,7 @@ public final class ClientGpuCapture {
 	public static CompletableFuture<GpuCaptureImageSet> capture(GpuCaptureRequestPayload payload) {
 		CompletableFuture<GpuCaptureImageSet> future = new CompletableFuture<>();
 		Minecraft client = Minecraft.getInstance();
-		client.execute(() -> captureOnClient(client, payload, future));
+		client.execute(() -> ClientDeferredTasks.afterClientTicks(CAPTURE_SETTLE_TICKS, () -> captureOnClient(client, payload, future)));
 		return future;
 	}
 
