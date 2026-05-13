@@ -599,11 +599,11 @@ public final class AgentRuntime {
 		int height = parseClampedInt(call.arguments(), "height", 512, 256, 1080, warnings);
 		double fovDegrees = parseClampedDouble(call.arguments(), "fov_degrees", 60.0D, 30.0D, 90.0D, warnings);
 		boolean isometric = MineAgentToolRegistry.CLIENT_SANDBOX_ISOMETRIC_TOOL.equals(call.name());
-		double cameraX = parseDouble(call.arguments(), "x", 0.0D, warnings);
-		double cameraY = parseDouble(call.arguments(), "y", 0.0D, warnings);
-		double cameraZ = parseDouble(call.arguments(), "z", 0.0D, warnings);
-		float yaw = (float) parseDouble(call.arguments(), "yaw_degrees", 0.0D, warnings);
-		float pitch = (float) parseClampedDouble(call.arguments(), "pitch_degrees", 0.0D, -90.0D, 90.0D, warnings);
+		double cameraX = isometric ? 0.0D : parseDouble(call.arguments(), "x", 0.0D, warnings);
+		double cameraY = isometric ? 0.0D : parseDouble(call.arguments(), "y", 0.0D, warnings);
+		double cameraZ = isometric ? 0.0D : parseDouble(call.arguments(), "z", 0.0D, warnings);
+		float yaw = isometric ? 0.0F : (float) parseDouble(call.arguments(), "yaw_degrees", 0.0D, warnings);
+		float pitch = isometric ? 0.0F : (float) parseClampedDouble(call.arguments(), "pitch_degrees", 0.0D, -90.0D, 90.0D, warnings);
 
 		CompletableFuture<AgentToolResult> future = new CompletableFuture<>();
 		server.execute(() -> {
@@ -972,8 +972,10 @@ public final class AgentRuntime {
 		if (payload.mode().equals(RaycastMode.FREE.id())) {
 			warningArray.add("Free raycast is outside sandbox clipping. Prefer sandbox mode for normal agent perception.");
 		}
-		warningArray.add("Raycast images are attached to the next model request as PNG image inputs when the provider accepts image content.");
 		content.add("warnings", warningArray);
+		JsonArray notes = new JsonArray();
+		notes.add("Raycast images are attached to the next model request as PNG image inputs when the provider accepts image content.");
+		content.add("notes", notes);
 		return content;
 	}
 
@@ -994,10 +996,12 @@ public final class AgentRuntime {
 		for (String warning : warnings) {
 			warningArray.add(warning);
 		}
-		warningArray.add("GPU capture images are ordinary rendered screenshots, not raycast multi-channel data.");
-		warningArray.add("GPU capture suppresses MineAgent sandbox/edit-bound overlays and vanilla targeting outline, then applies temporary night-vision normalization before restoring client state.");
-		warningArray.add("GPU capture images are attached to the next model request as PNG image inputs when the provider accepts image content.");
 		content.add("warnings", warningArray);
+		JsonArray notes = new JsonArray();
+		notes.add("GPU capture images are ordinary rendered screenshots, not raycast multi-channel data.");
+		notes.add("GPU capture suppresses MineAgent sandbox/edit-bound overlays and vanilla targeting outline, then applies temporary night-vision normalization before restoring client state.");
+		notes.add("GPU capture images are attached to the next model request as PNG image inputs when the provider accepts image content.");
+		content.add("notes", notes);
 		return content;
 	}
 
