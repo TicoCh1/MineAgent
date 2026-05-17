@@ -15,6 +15,7 @@ import com.tico.mineagent.client.gui.MineAgentControlScreen;
 import com.tico.mineagent.client.raycast.ClientRaycastCapture;
 import com.tico.mineagent.client.raycast.RaycastImageSet;
 import com.tico.mineagent.client.util.ClientDeferredTasks;
+import com.tico.mineagent.agent.AgentPlanSnapshot;
 import com.tico.mineagent.network.AgentClientSyncAckPayload;
 import com.tico.mineagent.network.AgentClientSyncRequestPayload;
 import com.tico.mineagent.network.GpuCaptureRequestPayload;
@@ -40,6 +41,7 @@ public final class ClientAgentUiState {
 	private static String currentActivity = "idle";
 	private static boolean awaitingApproval;
 	private static int completedSteps;
+	private static AgentPlanSnapshot plan = AgentPlanSnapshot.empty();
 	private static int raycastSize = 224;
 	private static double raycastFov = 70.0D;
 	private static RaycastMode raycastMode = RaycastMode.SANDBOX;
@@ -262,6 +264,10 @@ public final class ClientAgentUiState {
 		return completedSteps;
 	}
 
+	public static AgentPlanSnapshot plan() {
+		return plan;
+	}
+
 	public static int raycastSize() {
 		return raycastSize;
 	}
@@ -324,6 +330,7 @@ public final class ClientAgentUiState {
 		status = payload.status();
 		awaitingApproval = payload.awaitingApproval();
 		completedSteps = payload.completedSteps();
+		plan = AgentPlanSnapshot.fromJsonString(payload.planJson());
 		if (payload.openScreen()) {
 			addLog("ui", "MineAgent control panel connected.");
 		}

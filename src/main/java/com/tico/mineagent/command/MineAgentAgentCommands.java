@@ -1,6 +1,7 @@
 package com.tico.mineagent.command;
 
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.DynamicCommandExceptionType;
@@ -19,8 +20,11 @@ import net.minecraft.server.level.ServerPlayer;
 
 import com.tico.mineagent.agent.AgentConfigStore;
 import com.tico.mineagent.agent.AgentCredentials;
+import com.tico.mineagent.agent.AgentHostMode;
+import com.tico.mineagent.agent.AgentHostModes;
 import com.tico.mineagent.agent.AgentProviderType;
 import com.tico.mineagent.agent.AgentRuntime;
+import com.tico.mineagent.mcp.MineAgentMcpServer;
 
 public final class MineAgentAgentCommands {
 	private static final DynamicCommandExceptionType UNKNOWN_PROVIDER = new DynamicCommandExceptionType(
@@ -51,6 +55,8 @@ public final class MineAgentAgentCommands {
 				.then(Commands.literal("claude")
 						.then(Commands.argument("prompt", StringArgumentType.greedyString())
 								.executes(context -> start(context, AgentProviderType.CLAUDE, registryAccess))))
+				.then(host())
+				.then(mcp(registryAccess))
 				.then(Commands.literal("status")
 						.executes(MineAgentAgentCommands::status))
 				.then(Commands.literal("stop")
@@ -65,8 +71,73 @@ public final class MineAgentAgentCommands {
 		player.sendSystemMessage(Component.literal("   Environment alternative: OPENAI_API_KEY + MINEAGENT_OPENAI_MODEL, or ANTHROPIC_API_KEY + MINEAGENT_CLAUDE_MODEL."));
 		player.sendSystemMessage(Component.literal("   Warning: commands may be visible in server logs. Prefer env vars outside private single-player tests."));
 		player.sendSystemMessage(Component.literal("3) Start: //mineagent agent start <building task>"));
+		player.sendSystemMessage(Component.literal("   External host option: //mineagent agent mcp start, then connect Codex/Claude to the printed MCP URL."));
 		Optional<AgentCredentials> configured = AgentConfigStore.configured(player);
 		configured.ifPresent(credentials -> player.sendSystemMessage(Component.literal("Current in-memory config: " + credentials.safeSummary())));
+		return 1;
+	}
+
+	private static LiteralArgumentBuilder<CommandSourceStack> host() {
+		return Commands.literal("host")
+				.executes(MineAgentAgentCommands::hostStatus)
+				.then(Commands.literal("internal")
+						.executes(context -> setHostMode(context, AgentHostMode.INTERNAL)))
+				.then(Commands.literal("external")
+						.executes(context -> setHostMode(context, AgentHostMode.EXTERNAL)));
+	}
+
+	private static LiteralArgumentBuilder<CommandSourceStack> mcp(CommandBuildContext registryAccess) {
+		return Commands.literal("mcp")
+				.executes(MineAgentAgentCommands::mcpStatus)
+				.then(Commands.literal("start")
+						.executes(context -> startMcp(context, registryAccess, MineAgentMcpServer.defaultPort()))
+						.then(Commands.argument("port", IntegerArgumentType.integer(1024, 65535))
+								.executes(context -> startMcp(context, registryAccess, IntegerArgumentType.getInteger(context, "port")))))
+				.then(Commands.literal("stop")
+						.executes(MineAgentAgentCommands::stopMcp))
+				.then(Commands.literal("status")
+						.executes(MineAgentAgentCommands::mcpStatus));
+	}
+
+	private static int hostStatus(CommandContext<CommandSourceStack> context) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		player.sendSystemMessage(Component.literal("MineAgent host mode: " + AgentHostModes.get(player).id()));
+		player.sendSystemMessage(Component.literal("MineAgent external MCP: " + MineAgentMcpServer.instance().status()));
+		return 1;
+	}
+
+	private static int setHostMode(CommandContext<CommandSourceStack> context, AgentHostMode mode) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		AgentHostModes.set(player, mode);
+		player.sendSystemMessage(Component.literal("MineAgent host mode set to " + mode.id() + "."));
+		if (mode == AgentHostMode.EXTERNAL) {
+			player.sendSystemMessage(Component.literal("Start or reuse the external MCP endpoint with //mineagent agent mcp start."));
+		}
+		return 1;
+	}
+
+	private static int startMcp(CommandContext<CommandSourceStack> context, CommandBuildContext registryAccess, int port) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		MineAgentMcpServer.StartResult result = MineAgentMcpServer.instance().start(player, registryAccess, port);
+		player.sendSystemMessage(Component.literal(result.message()));
+		if (result.ok()) {
+			player.sendSystemMessage(Component.literal("Configure an external host as a Streamable HTTP MCP server using URL: " + result.url()));
+		}
+		return result.ok() ? 1 : 0;
+	}
+
+	private static int stopMcp(CommandContext<CommandSourceStack> context) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		MineAgentMcpServer.instance().stop();
+		AgentHostModes.set(player, AgentHostMode.INTERNAL);
+		player.sendSystemMessage(Component.literal("MineAgent external MCP server stopped. Host mode set to internal."));
+		return 1;
+	}
+
+	private static int mcpStatus(CommandContext<CommandSourceStack> context) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		player.sendSystemMessage(Component.literal("MineAgent host mode: " + AgentHostModes.get(player).id()));
+		player.sendSystemMessage(Component.literal("MineAgent external MCP: " + MineAgentMcpServer.instance().status()));
 		return 1;
 	}
 
@@ -105,7 +176,9 @@ public final class MineAgentAgentCommands {
 
 	private static int status(CommandContext<CommandSourceStack> context) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
 		ServerPlayer player = context.getSource().getPlayerOrException();
+		player.sendSystemMessage(Component.literal("MineAgent host mode: " + AgentHostModes.get(player).id()));
 		player.sendSystemMessage(Component.literal("MineAgent agent status: " + AgentRuntime.instance().status(player)));
+		player.sendSystemMessage(Component.literal("MineAgent external MCP: " + MineAgentMcpServer.instance().status()));
 		return 1;
 	}
 

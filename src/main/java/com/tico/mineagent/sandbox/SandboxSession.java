@@ -168,6 +168,14 @@ public final class SandboxSession {
 		return redoHistory.size();
 	}
 
+	public List<AgentEditRecord> undoHistorySnapshot() {
+		return List.copyOf(undoHistory);
+	}
+
+	public List<AgentEditRecord> redoHistorySnapshot() {
+		return List.copyOf(redoHistory);
+	}
+
 	public BlockPos min() {
 		if (!hasCompleteBounds()) {
 			return BlockPos.ZERO;

@@ -41,6 +41,14 @@ public final class BlockPaletteIndex {
 		}
 	}
 
+	public static String resourcePath() {
+		return RESOURCE_PATH;
+	}
+
+	public int entryCount() {
+		return entries.size();
+	}
+
 	public QueryResult query(String mode, String query, String column, int limit) {
 		String normalizedMode = mode.toLowerCase(Locale.ROOT);
 		String normalizedQuery = query.trim();

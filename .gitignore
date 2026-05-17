@@ -1,6 +1,8 @@
 # gradle
 
 .gradle/
+.gradle-compile/
+verify-cache/
 build/
 out/
 classes/

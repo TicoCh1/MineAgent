@@ -24,8 +24,8 @@ public final class OpenAiResponsesProvider implements AgentModelProvider {
 			.build();
 
 	@Override
-	public AgentConversation start(AgentCredentials credentials, String prompt, List<AgentImageAttachment> initialImages) {
-		return new AgentConversation(credentials, prompt, initialImages);
+	public AgentConversation start(AgentCredentials credentials, String prompt, String initialContext, List<AgentImageAttachment> initialImages) {
+		return new AgentConversation(credentials, prompt, initialContext, initialImages);
 	}
 
 	@Override
@@ -46,7 +46,7 @@ public final class OpenAiResponsesProvider implements AgentModelProvider {
 			JsonObject user = new JsonObject();
 			user.addProperty("role", "user");
 			user.add("content", userContent(
-					conversation.prompt() + "\n\nInitial MineAgent sandbox context: attached images are the eight +/-X +/-Y +/-Z sandbox isometric screenshots captured before planning.",
+					initialUserInput(conversation),
 					conversation.initialImages()));
 			input.add(user);
 		} else {
@@ -133,6 +133,13 @@ public final class OpenAiResponsesProvider implements AgentModelProvider {
 			array.add(object);
 		}
 		return array;
+	}
+
+	private static String initialUserInput(AgentConversation conversation) {
+		return conversation.initialContext()
+				+ "\n\n<user_request>\n"
+				+ conversation.prompt()
+				+ "\n</user_request>";
 	}
 
 	private static JsonArray userContent(String text, List<AgentImageAttachment> images) throws IOException {

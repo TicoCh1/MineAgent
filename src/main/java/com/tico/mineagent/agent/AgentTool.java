@@ -8,4 +8,7 @@ public record AgentTool(
 		JsonObject inputSchema,
 		boolean readOnly,
 		AgentToolHandler handler) {
+	public AgentToolMetadata metadata() {
+		return AgentToolMetadata.forName(name, readOnly);
+	}
 }

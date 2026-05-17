@@ -1,7 +1,6 @@
 package com.tico.mineagent.edit;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
-import com.mojang.brigadier.exceptions.Dynamic2CommandExceptionType;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -12,7 +11,6 @@ import net.minecraft.commands.arguments.blocks.BlockInput;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -28,17 +26,12 @@ import com.tico.mineagent.mask.AgentMask;
 import com.tico.mineagent.sandbox.SandboxSession;
 
 public final class AgentEditService {
-	private static final long MAX_CANDIDATE_BLOCKS = 500_000L;
-	private static final Dynamic2CommandExceptionType TOO_LARGE = new Dynamic2CommandExceptionType(
-			(candidates, limit) -> Component.literal("MineAgent edit operation is too large: " + candidates + " candidate blocks exceeds limit " + limit + "."));
-
 	private AgentEditService() {
 	}
 
 	public static GeometryEditResult replace(ServerLevel level, SandboxSession sandbox, AgentMask sourceMask, BlockInput target, BlockPos first, BlockPos second, List<String> warnings) throws CommandSyntaxException {
 		BlockPos min = min(first, second);
 		BlockPos max = max(first, second);
-		ensureWithinLimit(boxVolume(min, max));
 		EditStats stats = new EditStats(level, sandbox, "replace", warnings);
 		Set<Long> visited = new HashSet<>();
 
@@ -69,7 +62,6 @@ public final class AgentEditService {
 	public static GeometryEditResult move(ServerLevel level, SandboxSession sandbox, AgentMask sourceMask, BlockPos first, BlockPos second, BlockPos fromReference, BlockPos toReference, boolean ignoreAir, List<String> warnings) throws CommandSyntaxException {
 		BlockPos min = min(first, second);
 		BlockPos max = max(first, second);
-		ensureWithinLimit(boxVolume(min, max));
 		BlockPos delta = toReference.subtract(fromReference);
 		if (delta.equals(BlockPos.ZERO)) {
 			throw new IllegalArgumentException("Move delta is zero; from_reference and to_reference must differ.");
@@ -127,7 +119,6 @@ public final class AgentEditService {
 	public static AgentCopyResult copy(ServerLevel level, SandboxSession sandbox, AgentMask sourceMask, BlockPos first, BlockPos second, BlockPos reference, List<String> warnings) throws CommandSyntaxException {
 		BlockPos min = min(first, second);
 		BlockPos max = max(first, second);
-		ensureWithinLimit(boxVolume(min, max));
 		CopyStats stats = new CopyStats(warnings);
 		List<AgentClipboard.Entry> entries = new ArrayList<>();
 		Set<Long> visited = new HashSet<>();
@@ -192,8 +183,6 @@ public final class AgentEditService {
 		}
 		BlockPos min = min(first, second);
 		BlockPos max = max(first, second);
-		long candidates = boxVolume(min, max) * (long) count;
-		ensureWithinLimit(candidates);
 
 		EditStats stats = new EditStats(level, sandbox, "stack", warnings);
 		List<StackEntry> snapshots = new ArrayList<>();
@@ -298,19 +287,6 @@ public final class AgentEditService {
 				}
 			}
 		}
-	}
-
-	private static void ensureWithinLimit(long candidates) throws CommandSyntaxException {
-		if (candidates > MAX_CANDIDATE_BLOCKS) {
-			throw TOO_LARGE.create(candidates, MAX_CANDIDATE_BLOCKS);
-		}
-	}
-
-	private static long boxVolume(BlockPos min, BlockPos max) {
-		long x = (long) max.getX() - min.getX() + 1L;
-		long y = (long) max.getY() - min.getY() + 1L;
-		long z = (long) max.getZ() - min.getZ() + 1L;
-		return Math.max(0L, x) * Math.max(0L, y) * Math.max(0L, z);
 	}
 
 	private static BlockPos min(BlockPos first, BlockPos second) {

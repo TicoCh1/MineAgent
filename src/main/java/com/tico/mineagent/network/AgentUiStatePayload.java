@@ -14,8 +14,10 @@ public record AgentUiStatePayload(
 		String model,
 		String status,
 		boolean awaitingApproval,
-		int completedSteps) implements CustomPacketPayload {
+		int completedSteps,
+		String planJson) implements CustomPacketPayload {
 	private static final int MAX_TEXT_LENGTH = 2048;
+	private static final int MAX_PLAN_LENGTH = 8192;
 	public static final ResourceLocation PAYLOAD_ID = ResourceLocation.fromNamespaceAndPath(MineAgent.MOD_ID, "agent_ui_state");
 	public static final Type<AgentUiStatePayload> ID = new Type<>(PAYLOAD_ID);
 	public static final StreamCodec<RegistryFriendlyByteBuf, AgentUiStatePayload> CODEC = StreamCodec.of(AgentUiStatePayload::write, AgentUiStatePayload::read);
@@ -33,6 +35,7 @@ public record AgentUiStatePayload(
 		buffer.writeUtf(payload.status(), MAX_TEXT_LENGTH);
 		buffer.writeBoolean(payload.awaitingApproval());
 		buffer.writeInt(payload.completedSteps());
+		buffer.writeUtf(payload.planJson(), MAX_PLAN_LENGTH);
 	}
 
 	private static AgentUiStatePayload read(RegistryFriendlyByteBuf buffer) {
@@ -43,6 +46,7 @@ public record AgentUiStatePayload(
 				buffer.readUtf(MAX_TEXT_LENGTH),
 				buffer.readUtf(MAX_TEXT_LENGTH),
 				buffer.readBoolean(),
-				buffer.readInt());
+				buffer.readInt(),
+				buffer.readUtf(MAX_PLAN_LENGTH));
 	}
 }

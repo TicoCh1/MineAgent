@@ -22,6 +22,8 @@ import com.tico.mineagent.client.capture.GpuCaptureImageSet;
 import com.tico.mineagent.client.model.ClientModelCatalog;
 import com.tico.mineagent.client.state.ClientAgentUiState;
 import com.tico.mineagent.client.state.ClientSandboxState;
+import com.tico.mineagent.agent.AgentPlanItem;
+import com.tico.mineagent.agent.AgentPlanSnapshot;
 
 public class MineAgentControlScreen extends Screen {
 	private static final int BACKDROP = 0x8A05070B;
@@ -336,14 +338,64 @@ public class MineAgentControlScreen extends Screen {
 		}
 		graphics.drawString(font, "Raycast", rightX + 10, rightY + 215, MUTED, false);
 		graphics.drawString(font, ClientAgentUiState.raycastSize() + "x" + ClientAgentUiState.raycastSize(), rightX + rightW - 62, rightY + 215, SUBTLE, false);
-		int infoY = rightY + 314;
-		graphics.drawString(font, "Now", rightX + 10, infoY, MUTED, false);
-		graphics.drawWordWrap(font, Component.literal(ClientAgentUiState.currentActivity()), rightX + 10, infoY + 14, rightW - 20, TEXT);
-		int sandboxY = infoY + 58;
-		graphics.drawString(font, "Sandbox", rightX + 10, sandboxY, MUTED, false);
-		graphics.drawWordWrap(font, Component.literal(ClientSandboxState.summary()), rightX + 10, sandboxY + 14, rightW - 20, ClientSandboxState.complete() ? OK : WARN);
-		graphics.drawString(font, "Selector: " + ClientSandboxState.selectorId(), rightX + 10, sandboxY + 42, SUBTLE, false);
-		graphics.drawString(font, "Player: " + ClientAgentUiState.playerName(), rightX + 10, sandboxY + 56, SUBTLE, false);
+		int nextY = renderPlanSection(graphics, rightX + 10, rightY + 314, rightW - 20, rightY + logH - 76);
+		int infoY = nextY + 8;
+		int bottom = rightY + logH - 10;
+		if (infoY + 34 < bottom) {
+			graphics.drawString(font, "Now", rightX + 10, infoY, MUTED, false);
+			graphics.drawWordWrap(font, Component.literal(ClientAgentUiState.currentActivity()), rightX + 10, infoY + 14, rightW - 20, TEXT);
+		}
+		int sandboxY = infoY + 48;
+		if (sandboxY + 62 > bottom) {
+			sandboxY = Math.max(infoY + 48, bottom - 62);
+		}
+		if (sandboxY + 62 <= bottom) {
+			graphics.drawString(font, "Sandbox", rightX + 10, sandboxY, MUTED, false);
+			graphics.drawWordWrap(font, Component.literal(ClientSandboxState.summary()), rightX + 10, sandboxY + 14, rightW - 20, ClientSandboxState.complete() ? OK : WARN);
+			graphics.drawString(font, "Selector: " + ClientSandboxState.selectorId(), rightX + 10, sandboxY + 42, SUBTLE, false);
+			graphics.drawString(font, "Player: " + ClientAgentUiState.playerName(), rightX + 10, sandboxY + 56, SUBTLE, false);
+		}
+	}
+
+	private int renderPlanSection(GuiGraphics graphics, int x, int y, int w, int maxY) {
+		graphics.drawString(font, "Progress", x, y, MUTED, false);
+		AgentPlanSnapshot plan = ClientAgentUiState.plan();
+		int rowY = y + 14;
+		if (!plan.explanation().isBlank() && rowY + font.lineHeight < maxY) {
+			String text = font.plainSubstrByWidth(plan.explanation(), w);
+			graphics.drawString(font, text, x, rowY, SUBTLE, false);
+			rowY += font.lineHeight + 3;
+		}
+		if (plan.items().isEmpty()) {
+			if (rowY + font.lineHeight < maxY) {
+				graphics.drawString(font, "No visible plan yet.", x, rowY, SUBTLE, false);
+				rowY += font.lineHeight + 3;
+			}
+			return rowY;
+		}
+		for (int index = 0; index < plan.items().size(); index++) {
+			AgentPlanItem item = plan.items().get(index);
+			if (rowY + font.lineHeight >= maxY) {
+				String more = "+" + (plan.items().size() - index) + " more";
+				graphics.drawString(font, more, x, rowY, SUBTLE, false);
+				rowY += font.lineHeight + 3;
+				break;
+			}
+			String marker = switch (item.status()) {
+				case AgentPlanItem.COMPLETED -> "[x] ";
+				case AgentPlanItem.IN_PROGRESS -> "[>] ";
+				default -> "[ ] ";
+			};
+			int color = switch (item.status()) {
+				case AgentPlanItem.COMPLETED -> OK;
+				case AgentPlanItem.IN_PROGRESS -> ACCENT;
+				default -> TEXT;
+			};
+			String line = font.plainSubstrByWidth(marker + item.step(), w);
+			graphics.drawString(font, line, x, rowY, color, false);
+			rowY += font.lineHeight + 3;
+		}
+		return rowY;
 	}
 
 	private void renderPromptBar(GuiGraphics graphics) {

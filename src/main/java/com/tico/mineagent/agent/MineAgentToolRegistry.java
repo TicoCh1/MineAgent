@@ -72,13 +72,13 @@ public final class MineAgentToolRegistry {
 
 	public static MineAgentToolRegistry create(CommandBuildContext registryAccess) {
 		List<AgentTool> tools = new ArrayList<>();
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_get_sandbox",
 				"Inspect the current player's MineAgent sandbox boundary, anchors, dimension, and player block position. Use this before any edit. This tool does not modify the world.",
 				schema(properties(), required()),
 				true,
 				MineAgentToolRegistry::getSandbox));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_block_palette_query",
 				"Look up Minecraft block series packages by visual color, block id, geometry/model columns, or full text in MineAgent's block palette table. Results are grouped into series such as oak planks, oak log, smooth sandstone, or deepslate tile so one material family occupies one result slot. For color search, block-entity style blocks are ignored, and packages are ranked by color plus construction usefulness: full cubes with same faces, full cubes with different faces, slabs/stairs, self-supporting irregulars, then dependent irregulars. Default results only include block ids, shape_description, geometry_details, average color, face_color_summary, and different_faces. Use extra_columns only when a specific field is needed; available extras are model_category, shape_family, support_class, average_alpha_coverage, tint_policy, material_tags, model_count, blockstate_model_ref_count, rotated_by_blockstate, model_sources, parent_models, texture_sources, confidence, and notes. Extra fields are usually less useful and should be requested deliberately.",
 				schema(properties(
@@ -90,7 +90,7 @@ public final class MineAgentToolRegistry {
 						required("mode", "query", "column", "limit", "extra_columns")),
 				true,
 				MineAgentToolRegistry::blockPaletteQuery));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				CLIENT_RAYCAST_TOOL,
 				"Capture the current client camera as MineAgent raycast perception. Prefer mode=sandbox unless the player explicitly asks for outside context. Resolution must be 128, 256, or 512. FOV must be 45, 60, 75, or 90 degrees. The result returns metadata, displays four aligned UI channels, saves PNGs locally, and attaches those images to the next provider request when image input is supported: textured color, depth, block_id, and xyz position.",
 				schema(properties(
@@ -100,7 +100,7 @@ public final class MineAgentToolRegistry {
 						required("mode", "resolution", "fov_degrees")),
 				true,
 				MineAgentToolRegistry::clientRaycast));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				CLIENT_VIRTUAL_CAMERA_TOOL,
 				"Render one clean GPU-accelerated client screenshot from an arbitrary virtual camera position and rotation. The camera does not move the player. MineAgent overlays and vanilla targeting outlines are suppressed during capture, and temporary night-vision normalization reduces time-of-day darkness before client state is restored. Default width/height is 512x512. Width is clamped to 256-1920, height to 256-1080, and FOV to 30-90 degrees. The image is displayed in the MineAgent UI, saved locally, and attached to the next provider request when image input is supported.",
 				schema(properties(
@@ -115,7 +115,7 @@ public final class MineAgentToolRegistry {
 						required("x", "y", "z", "yaw_degrees", "pitch_degrees", "width", "height", "fov_degrees")),
 				true,
 				MineAgentToolRegistry::clientVirtualCamera));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				CLIENT_SANDBOX_ISOMETRIC_TOOL,
 				"Render eight clean GPU-accelerated orthographic isometric overview screenshots aimed at the current sandbox from the +/-X +/-Y +/-Z diagonal directions. Use this after coherent edit batches to inspect silhouette, massing, rooflines, underside/overhangs, and hidden alignment without perspective distortion. MineAgent overlays and vanilla targeting outlines are suppressed during capture, and temporary night-vision normalization reduces time-of-day darkness before client state is restored. Default width/height is 512x512. Width is clamped to 256-1920, height to 256-1080, and FOV is accepted for API compatibility while orthographic framing is derived from the sandbox bounds. Images are displayed in the MineAgent UI, saved locally, and attached to the next provider request when image input is supported.",
 				schema(properties(
@@ -125,7 +125,7 @@ public final class MineAgentToolRegistry {
 						required("width", "height", "fov_degrees")),
 				true,
 				MineAgentToolRegistry::clientSandboxIsometric));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_mask_define",
 				"Define or replace a named MineAgent mask for later edits. Masks are reusable filters inspired by WorldEdit masks. Use not_blocks to protect adjacent blocks by excluding specific block states, blocks to affect only specific states, existing to ignore air, air to affect only air, and any_of/all_of/not to combine named masks.",
 				schema(properties(
@@ -137,13 +137,13 @@ public final class MineAgentToolRegistry {
 						required("name", "mode", "blocks", "masks", "invert")),
 				false,
 				MineAgentToolRegistry::defineMask));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_mask_list",
 				"List currently defined reusable MineAgent masks for this player session.",
 				schema(properties(), required()),
 				true,
 				MineAgentToolRegistry::listMasks));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_mask_delete",
 				"Delete a named MineAgent mask from this player session.",
 				schema(properties(
@@ -151,7 +151,7 @@ public final class MineAgentToolRegistry {
 						required("name")),
 				false,
 				MineAgentToolRegistry::deleteMask));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_set_anchor",
 				"Create or replace one or more named coordinate anchors inside the current sandbox session. Later coordinate parameters may use @name or @name+dx,dy,dz. Each position is parsed with MineAgent coordinate syntax and rounded to an integer block coordinate if needed.",
 				schema(properties(
@@ -159,7 +159,7 @@ public final class MineAgentToolRegistry {
 						required("anchors")),
 				false,
 				MineAgentToolRegistry::setAnchor));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_box_corners",
 				"Fill a rectangular box between two inclusive corner coordinates using one Minecraft block state. The operation is clipped to the sandbox and reports skipped blocks.",
 				schema(properties(
@@ -169,7 +169,7 @@ public final class MineAgentToolRegistry {
 						required("pos1", "pos2", "block")),
 				false,
 				MineAgentToolRegistry::boxCorners));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_set_block",
 				"Set one block at one explicit coordinate to one Minecraft block state. The operation is hard-clipped to the sandbox and reports whether it changed, was unchanged, or was skipped.",
 				schema(properties(
@@ -178,7 +178,7 @@ public final class MineAgentToolRegistry {
 						required("pos", "block")),
 				false,
 				MineAgentToolRegistry::setBlock));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_box_origin",
 				"Fill a rectangular box from an origin coordinate and three signed integer dimensions. Positive and negative dimensions choose the expansion direction; zero is corrected to one block.",
 				schema(properties(
@@ -190,7 +190,7 @@ public final class MineAgentToolRegistry {
 						required("origin", "size_x", "size_y", "size_z", "block")),
 				false,
 				MineAgentToolRegistry::boxOrigin));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_ellipsoid_center",
 				"Generate a voxel sphere or ellipsoid from a center coordinate and X/Y/Z radii, matching the MineAgent/WorldEdit-style radius plus half-block voxel test. Radii may be decimals and are clipped to the sandbox.",
 				schema(properties(
@@ -202,7 +202,7 @@ public final class MineAgentToolRegistry {
 						required("center", "radius_x", "radius_y", "radius_z", "block")),
 				false,
 				MineAgentToolRegistry::ellipsoidCenter));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_ellipsoid_box",
 				"Generate a voxel sphere or ellipsoid inscribed in the inclusive box between two coordinates. This is useful when the desired shape should touch all six faces of a bounding box.",
 				schema(properties(
@@ -212,7 +212,7 @@ public final class MineAgentToolRegistry {
 						required("pos1", "pos2", "block")),
 				false,
 				MineAgentToolRegistry::ellipsoidBox));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_cylinder",
 				"Generate a voxel cylinder from a center coordinate, an axis direction, an integer height, and a radius. Axis may be +x, -x, +y, -y, +z, or -z. Height is corrected to at least one; radius is corrected to at least one.",
 				schema(properties(
@@ -224,7 +224,7 @@ public final class MineAgentToolRegistry {
 						required("center", "axis", "height", "radius", "block")),
 				false,
 				MineAgentToolRegistry::cylinder));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_line",
 				"Draw a filled voxel line segment between two explicit coordinates, adapted from WorldEdit's line rasterization but without using a selection. Thickness is a non-negative radius; 0 draws a one-block-thick line.",
 				schema(properties(
@@ -235,7 +235,7 @@ public final class MineAgentToolRegistry {
 						required("pos1", "pos2", "thickness", "block")),
 				false,
 				MineAgentToolRegistry::line));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_curve",
 				"Draw a filled voxel curve through at least 3 explicit coordinates, adapted from WorldEdit's spline drawing but without using a selection. Default degree is 3. Higher degree uses local polynomial interpolation when requested. Thickness is a non-negative radius; 0 draws a one-block-thick curve.",
 				schema(properties(
@@ -246,7 +246,7 @@ public final class MineAgentToolRegistry {
 						required("points", "thickness", "block")),
 				false,
 				MineAgentToolRegistry::curve));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_replace",
 				"Replace blocks inside the inclusive box between pos1 and pos2, clipped to the sandbox. Provide either mask with a named mask or from_blocks with block-state syntax. If both are empty, MineAgent uses existing blocks only, matching WorldEdit's safe default of not replacing air.",
 				schema(properties(
@@ -258,7 +258,7 @@ public final class MineAgentToolRegistry {
 						required("pos1", "pos2", "from_blocks", "mask", "target_block")),
 				false,
 				MineAgentToolRegistry::replace));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_move",
 				"Move an inclusive source box by the vector from from_reference to to_reference, clipped to the sandbox. Source blocks are snapshotted first, then source positions are cleared, then target positions are overwritten. ignore_air is the WorldEdit -a behavior.",
 				schema(properties(
@@ -271,7 +271,7 @@ public final class MineAgentToolRegistry {
 						required("pos1", "pos2", "from_reference", "to_reference", "mask", "ignore_air")),
 				false,
 				MineAgentToolRegistry::move));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_copy",
 				"Copy an inclusive source box into the session clipboard using a reference point. The optional mask controls which source blocks are copied and skipped blocks are absent from the clipboard.",
 				schema(properties(
@@ -282,7 +282,7 @@ public final class MineAgentToolRegistry {
 						required("pos1", "pos2", "reference", "mask")),
 				false,
 				MineAgentToolRegistry::copy));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_paste",
 				"Paste the current session clipboard at a reference point. The optional mask is a target mask: it controls which existing target positions may be overwritten. ignore_air skips air entries from the clipboard, equivalent to WorldEdit -a paste behavior.",
 				schema(properties(
@@ -292,7 +292,7 @@ public final class MineAgentToolRegistry {
 						required("reference", "mask", "ignore_air")),
 				false,
 				MineAgentToolRegistry::paste));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_stack",
 				"Repeat an inclusive source box along one strict axis direction (+x, -x, +y, -y, +z, or -z), matching WorldEdit-style stack spacing by the source box size. source_mask filters which blocks inside the source box are copied. target_mask filters which existing target positions outside the source box may be overwritten. The sandbox remains the hard write boundary.",
 				schema(properties(
@@ -305,7 +305,7 @@ public final class MineAgentToolRegistry {
 						required("pos1", "pos2", "axis", "count", "source_mask", "target_mask")),
 				false,
 				MineAgentToolRegistry::stack));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_undo",
 				"Undo exactly one previous MineAgent block-edit record for this player session, using WorldEdit-style before/after change history. Undo may overwrite blocks if another tool or player changed them after the original edit; warnings report detected conflicts. Batches are not undo units.",
 				schema(properties(
@@ -313,7 +313,7 @@ public final class MineAgentToolRegistry {
 						required("steps")),
 				false,
 				MineAgentToolRegistry::undo));
-		tools.add(new AgentTool(
+		tools.add(tool(
 				"mineagent_redo",
 				"Redo exactly one MineAgent block-edit record that was undone in this player session. Redo may overwrite blocks if another tool or player changed them after undo; warnings report detected conflicts. Batches are not redo units.",
 				schema(properties(
@@ -326,6 +326,18 @@ public final class MineAgentToolRegistry {
 
 	public List<AgentTool> tools() {
 		return tools;
+	}
+
+	private static AgentTool tool(String name, String description, JsonObject inputSchema, boolean readOnly, AgentToolHandler handler) {
+		AgentTool tool = new AgentTool(name, description, inputSchema, readOnly, handler);
+		AgentToolMetadata metadata = tool.metadata();
+		if ("Uncategorized".equals(metadata.category())) {
+			throw new IllegalStateException("MineAgent tool metadata is missing for " + name + ".");
+		}
+		if (metadata.readOnly() != readOnly) {
+			throw new IllegalStateException("MineAgent tool metadata readOnly mismatch for " + name + ".");
+		}
+		return tool;
 	}
 
 	private static AgentToolOutput getSandbox(AgentToolContext context, JsonObject arguments) {

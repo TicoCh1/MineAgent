@@ -34,6 +34,8 @@ import com.tico.mineagent.network.GpuCaptureRequestPayload;
 import com.tico.mineagent.network.GpuCaptureResultPayload;
 import com.tico.mineagent.network.MineAgentNetworking;
 import com.tico.mineagent.network.RaycastResultPayload;
+import com.tico.mineagent.mcp.MineAgentMcpRegistry;
+import com.tico.mineagent.mcp.MineAgentMcpResource;
 import com.tico.mineagent.raycast.RaycastMode;
 import com.tico.mineagent.sandbox.SandboxSession;
 import com.tico.mineagent.sandbox.SandboxSessions;
@@ -48,6 +50,7 @@ public final class AgentRuntime {
 	private static final Gson PRETTY_GSON = new GsonBuilder().setPrettyPrinting().create();
 	private final ExecutorService executor = Executors.newCachedThreadPool(new AgentThreadFactory());
 	private final ConcurrentMap<UUID, RunningAgent> runningAgents = new ConcurrentHashMap<>();
+	private final ConcurrentMap<UUID, Boolean> externalWorldMayNeedSettlement = new ConcurrentHashMap<>();
 
 	private AgentRuntime() {
 	}
@@ -93,9 +96,14 @@ public final class AgentRuntime {
 			running.cancel();
 			MineAgentNetworking.clearAgentEditBounds(player);
 		}
+		externalWorldMayNeedSettlement.remove(player.getUUID());
 	}
 
 	public StartResult start(ServerPlayer player, AgentProviderType requestedProvider, String prompt, CommandBuildContext registryAccess) {
+		if (AgentHostModes.get(player) == AgentHostMode.EXTERNAL) {
+			return StartResult.failed("MineAgent host mode is external. Use the MCP endpoint from //mineagent agent mcp status, or switch back with //mineagent agent host internal.");
+		}
+
 		Optional<AgentCredentials> credentials = AgentConfigStore.resolve(player, requestedProvider);
 		if (credentials.isEmpty()) {
 			return StartResult.missingConfig();
@@ -129,6 +137,7 @@ public final class AgentRuntime {
 		}
 
 		MineAgentNetworking.clearAgentEditBounds(player);
+		AgentPlanStates.clear(player);
 		Future<?> task = executor.submit(() -> runLoop(server, playerId, resolved, prompt, registryAccess, running, runLog));
 		running.attachTask(task);
 		return StartResult.started(resolved.safeSummary());
@@ -138,13 +147,16 @@ public final class AgentRuntime {
 		String finishStatus = "unknown";
 		String finishMessage = "";
 		try {
-			MineAgentToolRegistry registry = MineAgentToolRegistry.create(registryAccess);
-			Map<String, AgentTool> toolsByName = index(registry.tools());
+			MineAgentMcpRegistry registry = MineAgentMcpRegistry.create(registryAccess);
+			List<AgentTool> modelTools = modelTools(registry.tools());
+			Map<String, AgentTool> toolsByName = index(modelTools);
 			AgentModelProvider provider = AgentProviders.create(credentials.provider());
 			List<AgentImageAttachment> initialImages = captureInitialSandboxIsometric(server, playerId, runLog);
-			AgentConversation conversation = provider.start(credentials, prompt, initialImages);
+			String initialContext = collectInitialPromptContext(server, playerId, credentials, modelTools, registry.resources(), initialImages);
+			runLog.event("prompt_context", promptContextData(initialContext));
+			AgentConversation conversation = provider.start(credentials, prompt, initialContext, initialImages);
 			List<AgentToolResult> pendingResults = List.of();
-			runLog.event("tool_registry", toolRegistryData(registry.tools()));
+			runLog.event("tool_registry", toolRegistryData(modelTools));
 
 			for (int step = 1; !running.cancelled(); step++) {
 				if (step > 1 && (step - 1) % APPROVAL_SEGMENT_STEPS == 0 && !waitForContinuation(server, playerId, running, step - 1)) {
@@ -156,7 +168,7 @@ public final class AgentRuntime {
 
 				runLog.event("step_start", stepData(step, pendingResults.size()));
 				send(server, playerId, "ui", "MineAgent thinking, step " + step + ".");
-				AgentModelTurn turn = provider.next(conversation, registry.tools(), pendingResults, runLog);
+				AgentModelTurn turn = provider.next(conversation, modelTools, pendingResults, runLog);
 				runLog.event("model_turn", modelTurnData(step, turn));
 				if (!turn.text().isBlank()) {
 					sendDetail(server, playerId, "model", "Model visible reasoning, step " + step + ".", turn.text().trim());
@@ -289,6 +301,28 @@ public final class AgentRuntime {
 		return images;
 	}
 
+	private String collectInitialPromptContext(MinecraftServer server, UUID playerId, AgentCredentials credentials, List<AgentTool> tools, List<MineAgentMcpResource> resources, List<AgentImageAttachment> initialImages) throws Exception {
+		CompletableFuture<String> future = new CompletableFuture<>();
+		server.execute(() -> {
+			try {
+				ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+				if (player == null) {
+					future.completeExceptionally(new IllegalStateException("Player is no longer online."));
+					return;
+				}
+				SandboxSession sandbox = SandboxSessions.get(player);
+				future.complete(AgentPromptContext.initial(credentials, player, sandbox, tools, resources, initialImages));
+			} catch (Exception exception) {
+				future.completeExceptionally(exception);
+			}
+		});
+		try {
+			return future.get(12, TimeUnit.SECONDS);
+		} catch (TimeoutException exception) {
+			throw new IllegalStateException("Timed out while collecting initial MineAgent prompt context.", exception);
+		}
+	}
+
 	private List<AgentToolResult> executeToolCalls(MinecraftServer server, UUID playerId, CommandBuildContext registryAccess, Map<String, AgentTool> toolsByName, List<AgentToolCall> calls, AgentRunLogger runLog) {
 		if (hasCountedOperation(calls)) {
 			clearEditBounds(server, playerId);
@@ -309,7 +343,7 @@ public final class AgentRuntime {
 			AgentToolResult result;
 			if (!validation.ok() && (!validation.allowQueries() || !isQueryTool(toolsByName, call))) {
 				result = AgentToolResult.error(call, "Batch rejected by MineAgent policy before execution: " + validation.message());
-			} else if (failedNonQueryTool != null && !isQueryTool(toolsByName, call)) {
+			} else if (failedNonQueryTool != null && !isQueryTool(toolsByName, call) && !isHostStateTool(call.name())) {
 				result = AgentToolResult.error(call, "Skipped because previous non-query operation failed in this batch: " + failedNonQueryTool + ". Query tools may still run, but edit/capture/session-changing calls after a failure are not executed.");
 			} else if (clientWorldMayNeedSettlement && requiresSettledClientWorldBeforeCall(toolsByName, call)) {
 				ClientSyncResult sync = waitForClientWorldSettlement(server, playerId, call, runLog);
@@ -327,7 +361,7 @@ public final class AgentRuntime {
 			if (result.ok() && isWorldChangingTool(call.name())) {
 				clientWorldMayNeedSettlement = true;
 			}
-			if (!result.ok() && failedNonQueryTool == null && !isQueryTool(toolsByName, call)) {
+			if (!result.ok() && failedNonQueryTool == null && !isQueryTool(toolsByName, call) && !isHostStateTool(call.name())) {
 				failedNonQueryTool = call.name();
 			}
 			sendDetail(
@@ -339,6 +373,47 @@ public final class AgentRuntime {
 			results.add(result);
 		}
 		return List.copyOf(results);
+	}
+
+	public AgentToolResult executeExternalMcpToolCall(MinecraftServer server, UUID playerId, CommandBuildContext registryAccess, String toolName, JsonObject arguments) {
+		MineAgentMcpRegistry registry = MineAgentMcpRegistry.create(registryAccess);
+		Map<String, AgentTool> toolsByName = index(registry.tools());
+		JsonObject safeArguments = arguments == null ? new JsonObject() : arguments.deepCopy();
+		AgentToolCall call = new AgentToolCall("mcp-" + UUID.randomUUID(), toolName, safeArguments);
+		if (!toolsByName.containsKey(call.name())) {
+			return AgentToolResult.error(call, "Unknown MineAgent tool: " + call.name());
+		}
+		if (isBatchOperationTool(call.name())) {
+			clearEditBounds(server, playerId);
+		}
+
+		sendDetail(server, playerId, "tool", "External MCP calling tool: " + call.name(), pretty(call.arguments()));
+		boolean needsSettlement = Boolean.TRUE.equals(externalWorldMayNeedSettlement.get(playerId));
+		AgentToolResult result;
+		if (needsSettlement && requiresSettledClientWorldBeforeCall(toolsByName, call)) {
+			ClientSyncResult sync = waitForClientWorldSettlement(server, playerId, call, null);
+			if (sync.ok()) {
+				externalWorldMayNeedSettlement.remove(playerId);
+				result = executeToolCall(server, playerId, registryAccess, toolsByName, call);
+			} else if (isCaptureTool(call.name())) {
+				result = AgentToolResult.error(call, "Skipped capture because the client did not confirm that prior block edits were received/render-settled: " + sync.message());
+			} else {
+				result = executeToolCall(server, playerId, registryAccess, toolsByName, call);
+			}
+		} else {
+			result = executeToolCall(server, playerId, registryAccess, toolsByName, call);
+		}
+
+		if (result.ok() && isWorldChangingTool(call.name())) {
+			externalWorldMayNeedSettlement.put(playerId, Boolean.TRUE);
+		}
+		sendDetail(
+				server,
+				playerId,
+				result.ok() ? "ok" : "error",
+				"External MCP tool " + (result.ok() ? "completed: " : "failed: ") + call.name(),
+				toolResultUiDetail(result));
+		return result;
 	}
 
 	private static boolean hasCountedOperation(List<AgentToolCall> calls) {
@@ -396,54 +471,23 @@ public final class AgentRuntime {
 
 	private static boolean isQueryTool(Map<String, AgentTool> toolsByName, AgentToolCall call) {
 		AgentTool tool = toolsByName.get(call.name());
-		return tool != null && tool.readOnly() && !isCaptureTool(call.name());
+		return tool != null && tool.metadata().queryTool();
 	}
 
 	private static boolean isCaptureTool(String toolName) {
-		return MineAgentToolRegistry.CLIENT_RAYCAST_TOOL.equals(toolName)
-				|| MineAgentToolRegistry.CLIENT_VIRTUAL_CAMERA_TOOL.equals(toolName)
-				|| MineAgentToolRegistry.CLIENT_SANDBOX_ISOMETRIC_TOOL.equals(toolName);
+		return AgentToolMetadata.forName(toolName).captureTool();
 	}
 
 	private static boolean isBatchOperationTool(String toolName) {
-		return switch (toolName) {
-			case "mineagent_set_block",
-					"mineagent_box_corners",
-					"mineagent_box_origin",
-					"mineagent_ellipsoid_center",
-					"mineagent_ellipsoid_box",
-					"mineagent_cylinder",
-					"mineagent_line",
-					"mineagent_curve",
-					"mineagent_replace",
-					"mineagent_move",
-					"mineagent_copy",
-					"mineagent_paste",
-					"mineagent_stack",
-					"mineagent_undo",
-					"mineagent_redo" -> true;
-			default -> false;
-		};
+		return AgentToolMetadata.forName(toolName).countedOperation();
+	}
+
+	private static boolean isHostStateTool(String toolName) {
+		return AgentHostToolRegistry.UPDATE_PLAN_TOOL.equals(toolName);
 	}
 
 	private static boolean isWorldChangingTool(String toolName) {
-		return switch (toolName) {
-			case "mineagent_set_block",
-					"mineagent_box_corners",
-					"mineagent_box_origin",
-					"mineagent_ellipsoid_center",
-					"mineagent_ellipsoid_box",
-					"mineagent_cylinder",
-					"mineagent_line",
-					"mineagent_curve",
-					"mineagent_replace",
-					"mineagent_move",
-					"mineagent_paste",
-					"mineagent_stack",
-					"mineagent_undo",
-					"mineagent_redo" -> true;
-			default -> false;
-		};
+		return AgentToolMetadata.forName(toolName).worldChanging();
 	}
 
 	private static boolean requiresSettledClientWorldBeforeCall(Map<String, AgentTool> toolsByName, AgentToolCall call) {
@@ -499,7 +543,9 @@ public final class AgentRuntime {
 		data.addProperty("ok", result.ok());
 		data.addProperty("message", result.message());
 		data.addProperty("client_ticks", CLIENT_WORLD_SETTLE_TICKS_AFTER_EDIT);
-		runLog.event("client_world_sync", data);
+		if (runLog != null) {
+			runLog.event("client_world_sync", data);
+		}
 		return result;
 	}
 
@@ -666,17 +712,41 @@ public final class AgentRuntime {
 		return Map.copyOf(indexed);
 	}
 
+	private static List<AgentTool> modelTools(List<AgentTool> mcpTools) {
+		List<AgentTool> tools = new ArrayList<>(AgentHostToolRegistry.tools());
+		tools.addAll(mcpTools);
+		return List.copyOf(tools);
+	}
+
 	private static JsonObject toolRegistryData(List<AgentTool> tools) {
 		JsonObject data = new JsonObject();
 		data.addProperty("count", tools.size());
 		JsonArray array = new JsonArray();
 		for (AgentTool tool : tools) {
+			AgentToolMetadata metadata = tool.metadata();
 			JsonObject item = new JsonObject();
 			item.addProperty("name", tool.name());
+			item.addProperty("title", metadata.title());
+			item.addProperty("category", metadata.category());
+			item.addProperty("status", metadata.status());
 			item.addProperty("read_only", tool.readOnly());
+			item.addProperty("destructive", metadata.destructive());
+			item.addProperty("counted_operation", metadata.countedOperation());
+			item.addProperty("capture_tool", metadata.captureTool());
+			item.addProperty("setup_tool", metadata.setupTool());
+			item.addProperty("sandbox_required", metadata.sandboxRequired());
+			item.addProperty("world_changing", metadata.worldChanging());
 			array.add(item);
 		}
 		data.add("tools", array);
+		return data;
+	}
+
+	private static JsonObject promptContextData(String initialContext) {
+		JsonObject data = new JsonObject();
+		data.addProperty("kind", "initial_run_context");
+		data.addProperty("chars", initialContext.length());
+		data.addProperty("text", initialContext);
 		return data;
 	}
 
@@ -750,6 +820,11 @@ public final class AgentRuntime {
 	}
 
 	private static String toolResultUiDetail(AgentToolResult result) {
+		if (AgentHostToolRegistry.UPDATE_PLAN_TOOL.equals(result.toolName()) && result.ok()) {
+			JsonArray plan = result.content().getAsJsonArray("plan");
+			int items = plan == null ? 0 : plan.size();
+			return "Visible build plan updated with " + items + " item(s).";
+		}
 		if (!"mineagent_block_palette_query".equals(result.toolName()) || !result.ok()) {
 			return result.outputJson();
 		}

@@ -16,6 +16,7 @@ import net.minecraft.server.level.ServerPlayer;
 
 import com.tico.mineagent.agent.AgentConfigStore;
 import com.tico.mineagent.agent.AgentCredentials;
+import com.tico.mineagent.agent.AgentPlanStates;
 import com.tico.mineagent.agent.AgentProviderType;
 import com.tico.mineagent.agent.AgentRuntime;
 import com.tico.mineagent.raycast.RaycastMode;
@@ -314,7 +315,8 @@ public final class MineAgentNetworking {
 				model,
 				AgentRuntime.instance().status(player),
 				AgentRuntime.instance().isAwaitingApproval(player),
-				AgentRuntime.instance().completedSteps(player));
+				AgentRuntime.instance().completedSteps(player),
+				AgentPlanStates.snapshot(player).toJsonString());
 	}
 
 	private static CompletableFuture<RaycastResultPayload> failedFuture(String message) {

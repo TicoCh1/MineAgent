@@ -1,7 +1,6 @@
 package com.tico.mineagent.geometry;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
-import com.mojang.brigadier.exceptions.Dynamic2CommandExceptionType;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -11,7 +10,6 @@ import java.util.Set;
 import net.minecraft.commands.arguments.blocks.BlockInput;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Block;
 
@@ -21,15 +19,10 @@ import com.tico.mineagent.history.AgentEditRecord;
 import com.tico.mineagent.sandbox.SandboxSession;
 
 public final class GeometryEditService {
-	private static final long MAX_CANDIDATE_BLOCKS = 500_000L;
-	private static final Dynamic2CommandExceptionType TOO_LARGE = new Dynamic2CommandExceptionType(
-			(candidates, limit) -> Component.literal("MineAgent geometry operation is too large: " + candidates + " candidate blocks exceeds limit " + limit + "."));
-
 	private GeometryEditService() {
 	}
 
 	public static GeometryEditResult setBlock(ServerLevel level, SandboxSession sandbox, BlockInput block, BlockPos pos, List<String> warnings) throws CommandSyntaxException {
-		ensureWithinLimit(1);
 		EditRun run = new EditRun(level, block, sandbox, sandboxMask(sandbox), warnings, "set_block");
 		run.place(pos);
 		return run.result();
@@ -42,7 +35,6 @@ public final class GeometryEditService {
 	private static GeometryEditResult fillBox(ServerLevel level, SandboxSession sandbox, BlockInput block, BlockPos first, BlockPos second, List<String> warnings, String label) throws CommandSyntaxException {
 		BlockPos min = min(first, second);
 		BlockPos max = max(first, second);
-		ensureWithinLimit(boxVolume(min, max));
 		EditRun run = new EditRun(level, block, sandbox, sandboxMask(sandbox), warnings, label);
 		for (int y = min.getY(); y <= max.getY(); y++) {
 			for (int z = min.getZ(); z <= max.getZ(); z++) {
@@ -69,7 +61,6 @@ public final class GeometryEditService {
 		int maxY = (int) Math.ceil(centerY + effectiveRadiusY);
 		int minZ = (int) Math.floor(centerZ - effectiveRadiusZ);
 		int maxZ = (int) Math.ceil(centerZ + effectiveRadiusZ);
-		ensureWithinLimit(boxVolume(new BlockPos(minX, minY, minZ), new BlockPos(maxX, maxY, maxZ)));
 
 		EditRun run = new EditRun(level, block, sandbox, sandboxMask(sandbox), warnings, "ellipsoid");
 		for (int y = minY; y <= maxY; y++) {
@@ -102,8 +93,6 @@ public final class GeometryEditService {
 	public static GeometryEditResult makeCylinder(ServerLevel level, SandboxSession sandbox, BlockInput block, BlockPos center, GeometryAxisDirection axisDirection, int height, double radius, List<String> warnings) throws CommandSyntaxException {
 		double effectiveRadius = radius + 0.5D;
 		int ceilRadius = (int) Math.ceil(effectiveRadius);
-		long estimate = (long) height * ((long) ceilRadius * 2L + 1L) * ((long) ceilRadius * 2L + 1L);
-		ensureWithinLimit(estimate);
 
 		Direction direction = axisDirection.direction();
 		Direction.Axis axis = direction.getAxis();
@@ -124,8 +113,6 @@ public final class GeometryEditService {
 	}
 
 	public static GeometryEditResult makeLine(ServerLevel level, SandboxSession sandbox, BlockInput block, BlockPos first, BlockPos second, double thickness, List<String> warnings) throws CommandSyntaxException {
-		int length = maxAbsDelta(first, second) + 1;
-		ensureWithinLimit((long) length * balloonVolume(thickness));
 		Set<BlockPos> positions = linePositions(first, second);
 		return placePositions(level, sandbox, block, ballooned(positions, thickness), warnings, "line");
 	}
@@ -143,7 +130,6 @@ public final class GeometryEditService {
 		}
 		double length = Math.max(1.0D, polylineLength(points));
 		int samples = Math.max(1, (int) Math.ceil(length * 10.0D));
-		ensureWithinLimit(((long) samples + 1L) * balloonVolume(thickness));
 
 		List<Vec3> nodes = centered(points);
 		Set<BlockPos> positions = new HashSet<>();
@@ -156,7 +142,6 @@ public final class GeometryEditService {
 	}
 
 	private static GeometryEditResult placePositions(ServerLevel level, SandboxSession sandbox, BlockInput block, Set<BlockPos> positions, List<String> warnings, String label) throws CommandSyntaxException {
-		ensureWithinLimit(positions.size());
 		EditRun run = new EditRun(level, block, sandbox, sandboxMask(sandbox), warnings, label);
 		for (BlockPos pos : positions) {
 			run.place(pos);
@@ -222,15 +207,6 @@ public final class GeometryEditService {
 			}
 		}
 		return result;
-	}
-
-	private static long balloonVolume(double radius) {
-		int diameter = (int) Math.ceil(radius) * 2 + 1;
-		return (long) diameter * diameter * diameter;
-	}
-
-	private static int maxAbsDelta(BlockPos first, BlockPos second) {
-		return Math.max(Math.max(Math.abs(second.getX() - first.getX()), Math.abs(second.getY() - first.getY())), Math.abs(second.getZ() - first.getZ()));
 	}
 
 	private static int sign(int value) {
@@ -318,19 +294,6 @@ public final class GeometryEditService {
 
 	private static int endpointOffset(int size) {
 		return size > 0 ? size - 1 : size + 1;
-	}
-
-	private static void ensureWithinLimit(long candidates) throws CommandSyntaxException {
-		if (candidates > MAX_CANDIDATE_BLOCKS) {
-			throw TOO_LARGE.create(candidates, MAX_CANDIDATE_BLOCKS);
-		}
-	}
-
-	private static long boxVolume(BlockPos min, BlockPos max) {
-		long x = (long) max.getX() - min.getX() + 1L;
-		long y = (long) max.getY() - min.getY() + 1L;
-		long z = (long) max.getZ() - min.getZ() + 1L;
-		return Math.max(0L, x) * Math.max(0L, y) * Math.max(0L, z);
 	}
 
 	private static BlockPos min(BlockPos first, BlockPos second) {
