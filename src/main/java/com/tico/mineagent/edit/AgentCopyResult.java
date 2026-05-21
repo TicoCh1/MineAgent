@@ -8,9 +8,9 @@ public record AgentCopyResult(
 		AgentClipboard clipboard,
 		long candidates,
 		int copied,
-		int skippedOutsideSandbox,
-		int skippedOutsideWorld,
-		int skippedByMask,
+		long skippedOutsideSandbox,
+		long skippedOutsideWorld,
+		long skippedByMask,
 		List<String> warnings) {
 	public AgentCopyResult {
 		warnings = List.copyOf(warnings);

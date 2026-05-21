@@ -12,12 +12,14 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -30,6 +32,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.level.ServerLevel;
 
 import com.tico.mineagent.MineAgent;
+import com.tico.mineagent.geometry.EditRegionLimiter;
 import com.tico.mineagent.network.GpuCaptureRequestPayload;
 import com.tico.mineagent.network.GpuCaptureResultPayload;
 import com.tico.mineagent.network.MineAgentNetworking;
@@ -37,6 +40,9 @@ import com.tico.mineagent.network.RaycastResultPayload;
 import com.tico.mineagent.mcp.MineAgentMcpRegistry;
 import com.tico.mineagent.mcp.MineAgentMcpResource;
 import com.tico.mineagent.raycast.RaycastMode;
+import com.tico.mineagent.sandbox.SandboxExpansionGuards;
+import com.tico.mineagent.sandbox.SandboxExpansionRequiredException;
+import com.tico.mineagent.sandbox.SandboxPermissionMode;
 import com.tico.mineagent.sandbox.SandboxSession;
 import com.tico.mineagent.sandbox.SandboxSessions;
 
@@ -47,10 +53,14 @@ public final class AgentRuntime {
 	private static final int MAX_BATCH_QUERY_CALLS = 16;
 	private static final int MAX_OPERATIONS_PER_CAPTURE = 4;
 	private static final int CLIENT_WORLD_SETTLE_TICKS_AFTER_EDIT = 6;
+	private static final int MAX_BLOCKING_PREVIEW_POSITIONS = 64;
 	private static final Gson PRETTY_GSON = new GsonBuilder().setPrettyPrinting().create();
 	private final ExecutorService executor = Executors.newCachedThreadPool(new AgentThreadFactory());
 	private final ConcurrentMap<UUID, RunningAgent> runningAgents = new ConcurrentHashMap<>();
 	private final ConcurrentMap<UUID, Boolean> externalWorldMayNeedSettlement = new ConcurrentHashMap<>();
+	private final ConcurrentMap<UUID, Boolean> virtualCameraContextAvailable = new ConcurrentHashMap<>();
+	private final ConcurrentMap<UUID, PendingSandboxExpansion> pendingSandboxExpansions = new ConcurrentHashMap<>();
+	private final AtomicInteger nextSandboxExpansionRequestId = new AtomicInteger();
 
 	private AgentRuntime() {
 	}
@@ -65,6 +75,10 @@ public final class AgentRuntime {
 	}
 
 	public String status(ServerPlayer player) {
+		PendingSandboxExpansion pendingExpansion = pendingSandboxExpansions.get(player.getUUID());
+		if (pendingExpansion != null) {
+			return "waiting for sandbox expansion approval: " + pendingExpansion.operation();
+		}
 		RunningAgent running = runningAgents.get(player.getUUID());
 		if (running == null || running.finished()) {
 			return "no running agent";
@@ -85,6 +99,36 @@ public final class AgentRuntime {
 		return running == null ? 0 : running.completedSteps();
 	}
 
+	public boolean isAwaitingSandboxExpansion(ServerPlayer player) {
+		return pendingSandboxExpansions.containsKey(player.getUUID());
+	}
+
+	public String sandboxExpansionSummary(ServerPlayer player) {
+		PendingSandboxExpansion pending = pendingSandboxExpansions.get(player.getUUID());
+		return pending == null ? "" : pending.summary();
+	}
+
+	public boolean resolveSandboxExpansion(ServerPlayer player, boolean approve) {
+		PendingSandboxExpansion pending = pendingSandboxExpansions.remove(player.getUUID());
+		if (pending == null) {
+			return false;
+		}
+		if (approve) {
+			SandboxSession sandbox = SandboxSessions.get(player);
+			sandbox.expandToInclude(pending.requestedMin(), pending.requestedMax());
+			SandboxSessions.sync(player);
+			MineAgentNetworking.clearAgentEditBounds(player);
+			MineAgentNetworking.sendAgentLog(player, "ok", "Sandbox expanded for " + pending.operation() + ": " + pending.summary());
+			pending.future().complete(true);
+		} else {
+			MineAgentNetworking.clearAgentEditBounds(player);
+			MineAgentNetworking.sendAgentLog(player, "warn", "Sandbox expansion rejected for " + pending.operation() + ".");
+			pending.future().complete(false);
+		}
+		MineAgentNetworking.sendAgentState(player);
+		return true;
+	}
+
 	public boolean approveContinuation(ServerPlayer player) {
 		RunningAgent running = runningAgents.get(player.getUUID());
 		return running != null && running.approveContinuation();
@@ -96,10 +140,16 @@ public final class AgentRuntime {
 			running.cancel();
 			MineAgentNetworking.clearAgentEditBounds(player);
 		}
+		PendingSandboxExpansion pending = pendingSandboxExpansions.remove(player.getUUID());
+		if (pending != null) {
+			pending.future().complete(false);
+			MineAgentNetworking.clearAgentEditBounds(player);
+		}
 		externalWorldMayNeedSettlement.remove(player.getUUID());
+		virtualCameraContextAvailable.remove(player.getUUID());
 	}
 
-	public StartResult start(ServerPlayer player, AgentProviderType requestedProvider, String prompt, CommandBuildContext registryAccess) {
+	public StartResult start(ServerPlayer player, AgentProviderType requestedProvider, String prompt, CommandBuildContext registryAccess, boolean continueProject) {
 		if (AgentHostModes.get(player) == AgentHostMode.EXTERNAL) {
 			return StartResult.failed("MineAgent host mode is external. Use the MCP endpoint from //mineagent agent mcp status, or switch back with //mineagent agent host internal.");
 		}
@@ -138,12 +188,13 @@ public final class AgentRuntime {
 
 		MineAgentNetworking.clearAgentEditBounds(player);
 		AgentPlanStates.clear(player);
-		Future<?> task = executor.submit(() -> runLoop(server, playerId, resolved, prompt, registryAccess, running, runLog));
+		virtualCameraContextAvailable.remove(playerId);
+		Future<?> task = executor.submit(() -> runLoop(server, playerId, resolved, prompt, registryAccess, running, runLog, continueProject));
 		running.attachTask(task);
 		return StartResult.started(resolved.safeSummary());
 	}
 
-	private void runLoop(MinecraftServer server, UUID playerId, AgentCredentials credentials, String prompt, CommandBuildContext registryAccess, RunningAgent running, AgentRunLogger runLog) {
+	private void runLoop(MinecraftServer server, UUID playerId, AgentCredentials credentials, String prompt, CommandBuildContext registryAccess, RunningAgent running, AgentRunLogger runLog, boolean continueProject) {
 		String finishStatus = "unknown";
 		String finishMessage = "";
 		try {
@@ -154,7 +205,8 @@ public final class AgentRuntime {
 			List<AgentImageAttachment> initialImages = captureInitialSandboxIsometric(server, playerId, runLog);
 			String initialContext = collectInitialPromptContext(server, playerId, credentials, modelTools, registry.resources(), initialImages);
 			runLog.event("prompt_context", promptContextData(initialContext));
-			AgentConversation conversation = provider.start(credentials, prompt, initialContext, initialImages);
+			AgentConversationRestore restore = continueProject ? loadConversationRestore(server, playerId, credentials, runLog) : skipConversationRestore(runLog);
+			AgentConversation conversation = provider.start(credentials, prompt, initialContext, initialImages, restore);
 			List<AgentToolResult> pendingResults = List.of();
 			runLog.event("tool_registry", toolRegistryData(modelTools));
 
@@ -168,7 +220,20 @@ public final class AgentRuntime {
 
 				runLog.event("step_start", stepData(step, pendingResults.size()));
 				send(server, playerId, "ui", "MineAgent thinking, step " + step + ".");
-				AgentModelTurn turn = provider.next(conversation, modelTools, pendingResults, runLog);
+				AgentModelTurn turn;
+				try {
+					turn = provider.next(conversation, modelTools, pendingResults, runLog);
+				} catch (Exception exception) {
+					if (step == 1 && restore.hasOpenAiPreviousResponseId() && looksLikeStoredOpenAiResponseFailure(exception)) {
+						runLog.event("conversation_restore_retry", conversationRestoreRetryData(exception));
+						restore = AgentConversationRestore.fallback("Stored OpenAI previous_response_id could not be resumed: " + exception.getMessage());
+						conversation = provider.start(credentials, prompt, initialContext, initialImages, restore);
+						turn = provider.next(conversation, modelTools, pendingResults, runLog);
+					} else {
+						throw exception;
+					}
+				}
+				persistConversationState(server, playerId, conversation, runLog);
 				runLog.event("model_turn", modelTurnData(step, turn));
 				if (!turn.text().isBlank()) {
 					sendDetail(server, playerId, "model", "Model visible reasoning, step " + step + ".", turn.text().trim());
@@ -212,6 +277,7 @@ public final class AgentRuntime {
 			clearEditBounds(server, playerId);
 			running.finish();
 			runningAgents.remove(playerId, running);
+			virtualCameraContextAvailable.remove(playerId);
 		}
 	}
 
@@ -237,6 +303,90 @@ public final class AgentRuntime {
 			running.clearApproval();
 			sendState(server, playerId);
 		}
+	}
+
+	private AgentConversationRestore skipConversationRestore(AgentRunLogger runLog) {
+		AgentConversationRestore restore = AgentConversationRestore.empty();
+		JsonObject data = restore.toLogJson();
+		data.addProperty("skipped", true);
+		data.addProperty("reason", "Player started a fresh run instead of explicitly continuing the selected project.");
+		runLog.event("conversation_restore", data);
+		return restore;
+	}
+
+	private AgentConversationRestore loadConversationRestore(MinecraftServer server, UUID playerId, AgentCredentials credentials, AgentRunLogger runLog) {
+		CompletableFuture<AgentConversationRestore> future = new CompletableFuture<>();
+		server.execute(() -> {
+			try {
+				ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+				if (player == null) {
+					future.complete(AgentConversationRestore.fallback("Player is no longer online while loading MineAgent conversation state."));
+					return;
+				}
+				SandboxSession sandbox = SandboxSessions.get(player);
+				future.complete(AgentConversationStateStore.load(player, sandbox, credentials));
+			} catch (Exception exception) {
+				future.complete(AgentConversationRestore.fallback("MineAgent could not load persisted conversation state: " + exception.getMessage()));
+			}
+		});
+
+		try {
+			AgentConversationRestore restore = future.get(5, TimeUnit.SECONDS);
+			runLog.event("conversation_restore", restore.toLogJson());
+			return restore;
+		} catch (Exception exception) {
+			AgentConversationRestore restore = AgentConversationRestore.fallback("MineAgent timed out while loading persisted conversation state: " + exception.getMessage());
+			runLog.event("conversation_restore", restore.toLogJson());
+			return restore;
+		}
+	}
+
+	private void persistConversationState(MinecraftServer server, UUID playerId, AgentConversation conversation, AgentRunLogger runLog) {
+		CompletableFuture<JsonObject> future = new CompletableFuture<>();
+		server.execute(() -> {
+			try {
+				ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+				if (player == null) {
+					throw new IllegalStateException("Player is no longer online while saving MineAgent conversation state.");
+				}
+				SandboxSession sandbox = SandboxSessions.get(player);
+				future.complete(AgentConversationStateStore.save(player, sandbox, conversation));
+			} catch (Exception exception) {
+				future.completeExceptionally(exception);
+			}
+		});
+
+		try {
+			runLog.event("conversation_state_saved", future.get(5, TimeUnit.SECONDS));
+		} catch (Exception exception) {
+			JsonObject data = new JsonObject();
+			data.addProperty("saved", false);
+			data.addProperty("error", unwrapMessage(exception));
+			runLog.event("conversation_state_save_failed", data);
+		}
+	}
+
+	private static JsonObject conversationRestoreRetryData(Exception exception) {
+		JsonObject object = new JsonObject();
+		object.addProperty("reason", unwrapMessage(exception));
+		object.addProperty("fallback", "start fresh provider conversation and rely on project design docs plus new initial sandbox screenshots");
+		return object;
+	}
+
+	private static boolean looksLikeStoredOpenAiResponseFailure(Exception exception) {
+		String message = unwrapMessage(exception).toLowerCase();
+		return message.contains("previous_response_id")
+				|| message.contains("previous response")
+				|| (message.contains("response") && (message.contains("not found") || message.contains("expired") || message.contains("deleted") || message.contains("invalid") || message.contains("conflict")));
+	}
+
+	private static String unwrapMessage(Throwable throwable) {
+		Throwable current = throwable;
+		while (current instanceof ExecutionException && current.getCause() != null) {
+			current = current.getCause();
+		}
+		String message = current.getMessage();
+		return message == null || message.isBlank() ? current.toString() : message;
 	}
 
 	private List<AgentImageAttachment> captureInitialSandboxIsometric(MinecraftServer server, UUID playerId, AgentRunLogger runLog) throws Exception {
@@ -358,6 +508,7 @@ public final class AgentRuntime {
 			}
 
 			runLog.event("tool_result", toolResultData(result));
+			rememberVirtualCameraContext(playerId, result);
 			if (result.ok() && isWorldChangingTool(call.name())) {
 				clientWorldMayNeedSettlement = true;
 			}
@@ -407,6 +558,7 @@ public final class AgentRuntime {
 		if (result.ok() && isWorldChangingTool(call.name())) {
 			externalWorldMayNeedSettlement.put(playerId, Boolean.TRUE);
 		}
+		rememberVirtualCameraContext(playerId, result);
 		sendDetail(
 				server,
 				playerId,
@@ -490,6 +642,12 @@ public final class AgentRuntime {
 		return AgentToolMetadata.forName(toolName).worldChanging();
 	}
 
+	private void rememberVirtualCameraContext(UUID playerId, AgentToolResult result) {
+		if (result.ok() && MineAgentToolRegistry.CLIENT_VIRTUAL_CAMERA_TOOL.equals(result.toolName())) {
+			virtualCameraContextAvailable.put(playerId, Boolean.TRUE);
+		}
+	}
+
 	private static boolean requiresSettledClientWorldBeforeCall(Map<String, AgentTool> toolsByName, AgentToolCall call) {
 		return isCaptureTool(call.name()) || isQueryTool(toolsByName, call);
 	}
@@ -550,6 +708,10 @@ public final class AgentRuntime {
 	}
 
 	private AgentToolResult executeToolCall(MinecraftServer server, UUID playerId, CommandBuildContext registryAccess, Map<String, AgentTool> toolsByName, AgentToolCall call) {
+		return executeToolCall(server, playerId, registryAccess, toolsByName, call, 0);
+	}
+
+	private AgentToolResult executeToolCall(MinecraftServer server, UUID playerId, CommandBuildContext registryAccess, Map<String, AgentTool> toolsByName, AgentToolCall call, int sandboxExpansionRetries) {
 		AgentTool tool = toolsByName.get(call.name());
 		if (tool == null) {
 			return AgentToolResult.error(call, "Unknown MineAgent tool: " + call.name());
@@ -560,6 +722,9 @@ public final class AgentRuntime {
 		if (MineAgentToolRegistry.CLIENT_VIRTUAL_CAMERA_TOOL.equals(call.name())
 				|| MineAgentToolRegistry.CLIENT_SANDBOX_ISOMETRIC_TOOL.equals(call.name())) {
 			return executeClientGpuCaptureTool(server, playerId, call);
+		}
+		if (MineAgentToolRegistry.STRUCTURE_COMPARE_BBOXES_TOOL.equals(call.name())) {
+			return executeStructureCompareBboxesTool(server, playerId, registryAccess, call);
 		}
 
 		CompletableFuture<AgentToolResult> future = new CompletableFuture<>();
@@ -573,12 +738,17 @@ public final class AgentRuntime {
 
 				SandboxSession sandbox = SandboxSessions.get(player);
 				AgentToolContext context = new AgentToolContext(player, sandbox, registryAccess);
-				AgentToolOutput output = tool.handler().execute(context, call.arguments());
+				AgentToolOutput output;
+				try (SandboxExpansionGuards.Scope ignored = SandboxExpansionGuards.install(AgentRuntime::handleSandboxExpansionPolicy)) {
+					output = tool.handler().execute(context, call.arguments());
+				}
 				if (output.ok()) {
 					addEditBoundsFromOutput(player, call.name(), output);
 				}
 				SandboxSessions.sync(player);
 				future.complete(AgentToolResult.fromOutput(call, output));
+			} catch (SandboxExpansionRequiredException exception) {
+				future.completeExceptionally(exception);
 			} catch (Exception exception) {
 				future.complete(AgentToolResult.error(call, exception.getMessage()));
 			}
@@ -586,11 +756,255 @@ public final class AgentRuntime {
 
 		try {
 			return future.get(120, TimeUnit.SECONDS);
+		} catch (ExecutionException exception) {
+			if (exception.getCause() instanceof SandboxExpansionRequiredException expansion) {
+				if (sandboxExpansionRetries >= 4) {
+					return AgentToolResult.error(call, "Sandbox expansion approval loop exceeded 4 attempts for " + call.name() + ".");
+				}
+				SandboxExpansionDecision decision = waitForSandboxExpansion(server, playerId, expansion);
+				if (!decision.approved()) {
+					return AgentToolResult.error(call, decision.message());
+				}
+				return executeToolCall(server, playerId, registryAccess, toolsByName, call, sandboxExpansionRetries + 1);
+			}
+			return AgentToolResult.error(call, exception.getCause() == null ? exception.getMessage() : exception.getCause().getMessage());
 		} catch (TimeoutException exception) {
 			return AgentToolResult.error(call, "Tool timed out after 120 seconds.");
 		} catch (Exception exception) {
 			return AgentToolResult.error(call, exception.getMessage());
 		}
+	}
+
+	private AgentToolResult executeStructureCompareBboxesTool(MinecraftServer server, UUID playerId, CommandBuildContext registryAccess, AgentToolCall call) {
+		if (!Boolean.TRUE.equals(virtualCameraContextAvailable.get(playerId))) {
+			return AgentToolResult.error(call, "mineagent_structure_compare_bboxes requires a prior successful mineagent_virtual_camera_capture in this agent/session so the model first visually locates the areas being compared. Use virtual camera perception before choosing comparison bboxes.");
+		}
+
+		CompletableFuture<MineAgentToolRegistry.StructureCompareSnapshot> snapshotFuture = new CompletableFuture<>();
+		Runnable snapshotTask = () -> {
+			try {
+				ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+				if (player == null) {
+					snapshotFuture.completeExceptionally(new IllegalStateException("Player is no longer online."));
+					return;
+				}
+
+				SandboxSession sandbox = SandboxSessions.get(player);
+				AgentToolContext context = new AgentToolContext(player, sandbox, registryAccess);
+				snapshotFuture.complete(MineAgentToolRegistry.snapshotStructureCompareBboxes(context, call.arguments()));
+			} catch (Exception exception) {
+				snapshotFuture.completeExceptionally(exception);
+			}
+		};
+		if (server.isSameThread()) {
+			snapshotTask.run();
+		} else {
+			server.execute(snapshotTask);
+		}
+
+		MineAgentToolRegistry.StructureCompareSnapshot snapshot;
+		try {
+			snapshot = snapshotFuture.get(12, TimeUnit.SECONDS);
+		} catch (TimeoutException exception) {
+			return AgentToolResult.error(call, "Structure bbox snapshot timed out after 12 seconds.");
+		} catch (Exception exception) {
+			Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+			return AgentToolResult.error(call, cause.getMessage());
+		}
+
+		CompletableFuture<AgentToolOutput> compareFuture = CompletableFuture.supplyAsync(
+				() -> MineAgentToolRegistry.finishStructureCompareBboxes(snapshot),
+				executor);
+		try {
+			return AgentToolResult.fromOutput(call, compareFuture.get(120, TimeUnit.SECONDS));
+		} catch (TimeoutException exception) {
+			return AgentToolResult.error(call, "Structure bbox comparison timed out after 120 seconds.");
+		} catch (Exception exception) {
+			Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+			return AgentToolResult.error(call, cause.getMessage());
+		}
+	}
+
+	private static void handleSandboxExpansionPolicy(ServerLevel level, SandboxSession sandbox, BlockPos requestedMin, BlockPos requestedMax, String operation, List<String> warnings) {
+		if (sandbox.permissionMode() == SandboxPermissionMode.STRICT) {
+			return;
+		}
+
+		EditRegionLimiter.Box current = EditRegionLimiter.Box.of(sandbox.min(), sandbox.max());
+		EditRegionLimiter.Box requested = EditRegionLimiter.Box.of(requestedMin, requestedMax).clipY(level.getMinY(), level.getMaxY() - 1);
+		if (requested == null || current.contains(requested)) {
+			return;
+		}
+
+		EditRegionLimiter.Box expanded = unionBox(current, requested);
+		long addedVolume = saturatedSubtract(expanded.volume(), current.volume());
+		boolean autoScanSkipped = false;
+		List<BlockPos> blockingPositions = List.of();
+		if (sandbox.permissionMode() == SandboxPermissionMode.AUTO_EXPAND_AIR) {
+			if (addedVolume <= EditRegionLimiter.MAX_TRAVERSAL_BLOCKS) {
+				blockingPositions = nonAirExpansionPositions(level, current, expanded);
+				if (blockingPositions.isEmpty()) {
+					sandbox.expandToInclude(expanded.min(), expanded.max());
+					warnings.add(operation + " auto-expanded the sandbox through air to " + posSummary(expanded.min(), expanded.max()) + ".");
+					return;
+				}
+			} else {
+				autoScanSkipped = true;
+			}
+		}
+
+		throw new SandboxExpansionRequiredException(
+				operation,
+				current.min(),
+				current.max(),
+				expanded.min(),
+				expanded.max(),
+				addedVolume,
+				blockingPositions,
+				autoScanSkipped);
+	}
+
+	private SandboxExpansionDecision waitForSandboxExpansion(MinecraftServer server, UUID playerId, SandboxExpansionRequiredException expansion) {
+		CompletableFuture<Boolean> approval = new CompletableFuture<>();
+		PendingSandboxExpansion pending = new PendingSandboxExpansion(
+				nextSandboxExpansionRequestId.incrementAndGet(),
+				expansion.operation(),
+				expansion.currentMin(),
+				expansion.currentMax(),
+				expansion.requestedMin(),
+				expansion.requestedMax(),
+				expansion.addedVolume(),
+				expansion.blockingPositions(),
+				expansion.autoScanSkipped(),
+				approval);
+		PendingSandboxExpansion previous = pendingSandboxExpansions.put(playerId, pending);
+		if (previous != null) {
+			previous.future().complete(false);
+		}
+
+		server.execute(() -> {
+			ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+			if (player == null) {
+				pendingSandboxExpansions.remove(playerId, pending);
+				approval.complete(false);
+				return;
+			}
+			MineAgentNetworking.clearAgentEditBounds(player);
+			for (EditRegionLimiter.Box box : expansionBoxes(pending.currentMin(), pending.currentMax(), pending.requestedMin(), pending.requestedMax())) {
+				MineAgentNetworking.showAgentEditBounds(player, box.min(), box.max(), "sandbox expansion: " + pending.operation(), "expansion");
+			}
+			for (BlockPos pos : pending.blockingPositions()) {
+				MineAgentNetworking.showAgentEditBounds(player, pos, pos, "non-air expansion blocker", "blocking");
+			}
+			MineAgentNetworking.sendAgentLog(player, "warn", "MineAgent needs sandbox expansion approval for " + pending.operation() + ". Open //mineagent and choose Expand Sandbox or Reject.", pending.summary());
+			MineAgentNetworking.sendAgentState(player);
+		});
+
+		try {
+			boolean approved = Boolean.TRUE.equals(approval.get(10, TimeUnit.MINUTES));
+			if (approved) {
+				return new SandboxExpansionDecision(true, "Sandbox expansion approved.");
+			}
+			return new SandboxExpansionDecision(false, "Sandbox expansion rejected by the player for " + expansion.operation() + ".");
+		} catch (TimeoutException exception) {
+			pendingSandboxExpansions.remove(playerId, pending);
+			server.execute(() -> {
+				ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+				if (player != null) {
+					MineAgentNetworking.clearAgentEditBounds(player);
+					MineAgentNetworking.sendAgentLog(player, "warn", "Sandbox expansion approval timed out for " + expansion.operation() + ".");
+					MineAgentNetworking.sendAgentState(player);
+				}
+			});
+			return new SandboxExpansionDecision(false, "Sandbox expansion approval timed out for " + expansion.operation() + ".");
+		} catch (InterruptedException exception) {
+			Thread.currentThread().interrupt();
+			pendingSandboxExpansions.remove(playerId, pending);
+			return new SandboxExpansionDecision(false, "Sandbox expansion approval was interrupted for " + expansion.operation() + ".");
+		} catch (Exception exception) {
+			pendingSandboxExpansions.remove(playerId, pending);
+			return new SandboxExpansionDecision(false, "Sandbox expansion approval failed for " + expansion.operation() + ": " + exception.getMessage());
+		}
+	}
+
+	private static List<BlockPos> nonAirExpansionPositions(ServerLevel level, EditRegionLimiter.Box current, EditRegionLimiter.Box expanded) {
+		List<BlockPos> blocking = new ArrayList<>();
+		for (EditRegionLimiter.Box box : expansionBoxes(current.min(), current.max(), expanded.min(), expanded.max())) {
+			for (long y = box.min().getY(); y <= box.max().getY(); y++) {
+				for (long z = box.min().getZ(); z <= box.max().getZ(); z++) {
+					for (long x = box.min().getX(); x <= box.max().getX(); x++) {
+						BlockPos pos = new BlockPos((int) x, (int) y, (int) z);
+						if (!level.getBlockState(pos).isAir()) {
+							blocking.add(pos.immutable());
+							if (blocking.size() >= MAX_BLOCKING_PREVIEW_POSITIONS) {
+								return blocking;
+							}
+						}
+					}
+				}
+			}
+		}
+		return List.copyOf(blocking);
+	}
+
+	private static List<EditRegionLimiter.Box> expansionBoxes(BlockPos currentMin, BlockPos currentMax, BlockPos requestedMin, BlockPos requestedMax) {
+		List<EditRegionLimiter.Box> boxes = new ArrayList<>();
+		if (requestedMin.getX() < currentMin.getX()) {
+			boxes.add(box(requestedMin.getX(), requestedMin.getY(), requestedMin.getZ(), currentMin.getX() - 1, requestedMax.getY(), requestedMax.getZ()));
+		}
+		if (requestedMax.getX() > currentMax.getX()) {
+			boxes.add(box(currentMax.getX() + 1, requestedMin.getY(), requestedMin.getZ(), requestedMax.getX(), requestedMax.getY(), requestedMax.getZ()));
+		}
+
+		int overlapMinX = Math.max(requestedMin.getX(), currentMin.getX());
+		int overlapMaxX = Math.min(requestedMax.getX(), currentMax.getX());
+		if (overlapMinX <= overlapMaxX) {
+			if (requestedMin.getY() < currentMin.getY()) {
+				boxes.add(box(overlapMinX, requestedMin.getY(), requestedMin.getZ(), overlapMaxX, currentMin.getY() - 1, requestedMax.getZ()));
+			}
+			if (requestedMax.getY() > currentMax.getY()) {
+				boxes.add(box(overlapMinX, currentMax.getY() + 1, requestedMin.getZ(), overlapMaxX, requestedMax.getY(), requestedMax.getZ()));
+			}
+		}
+
+		int overlapMinY = Math.max(requestedMin.getY(), currentMin.getY());
+		int overlapMaxY = Math.min(requestedMax.getY(), currentMax.getY());
+		if (overlapMinX <= overlapMaxX && overlapMinY <= overlapMaxY) {
+			if (requestedMin.getZ() < currentMin.getZ()) {
+				boxes.add(box(overlapMinX, overlapMinY, requestedMin.getZ(), overlapMaxX, overlapMaxY, currentMin.getZ() - 1));
+			}
+			if (requestedMax.getZ() > currentMax.getZ()) {
+				boxes.add(box(overlapMinX, overlapMinY, currentMax.getZ() + 1, overlapMaxX, overlapMaxY, requestedMax.getZ()));
+			}
+		}
+		return boxes;
+	}
+
+	private static EditRegionLimiter.Box box(int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
+		return new EditRegionLimiter.Box(new BlockPos(minX, minY, minZ), new BlockPos(maxX, maxY, maxZ));
+	}
+
+	private static EditRegionLimiter.Box unionBox(EditRegionLimiter.Box first, EditRegionLimiter.Box second) {
+		return new EditRegionLimiter.Box(
+				new BlockPos(
+						Math.min(first.min().getX(), second.min().getX()),
+						Math.min(first.min().getY(), second.min().getY()),
+						Math.min(first.min().getZ(), second.min().getZ())),
+				new BlockPos(
+						Math.max(first.max().getX(), second.max().getX()),
+						Math.max(first.max().getY(), second.max().getY()),
+						Math.max(first.max().getZ(), second.max().getZ())));
+	}
+
+	private static long saturatedSubtract(long a, long b) {
+		if (a == Long.MAX_VALUE) {
+			return b == Long.MAX_VALUE ? 0L : Long.MAX_VALUE;
+		}
+		return Math.max(0L, a - b);
+	}
+
+	private static String posSummary(BlockPos min, BlockPos max) {
+		return "%d,%d,%d -> %d,%d,%d".formatted(min.getX(), min.getY(), min.getZ(), max.getX(), max.getY(), max.getZ());
 	}
 
 	private AgentToolResult executeClientRaycastTool(MinecraftServer server, UUID playerId, AgentToolCall call) {
@@ -1270,5 +1684,37 @@ public final class AgentRuntime {
 	}
 
 	private record ClientSyncResult(boolean ok, String message) {
+	}
+
+	private record SandboxExpansionDecision(boolean approved, String message) {
+	}
+
+	private record PendingSandboxExpansion(
+			int requestId,
+			String operation,
+			BlockPos currentMin,
+			BlockPos currentMax,
+			BlockPos requestedMin,
+			BlockPos requestedMax,
+			long addedVolume,
+			List<BlockPos> blockingPositions,
+			boolean autoScanSkipped,
+			CompletableFuture<Boolean> future) {
+		private String summary() {
+			String summary = "Current sandbox "
+					+ posSummary(currentMin, currentMax)
+					+ "; requested sandbox "
+					+ posSummary(requestedMin, requestedMax)
+					+ "; added block positions: "
+					+ addedVolume
+					+ ".";
+			if (!blockingPositions.isEmpty()) {
+				summary += " Non-air positions are marked in purple; showing up to " + MAX_BLOCKING_PREVIEW_POSITIONS + " sampled block(s).";
+			}
+			if (autoScanSkipped) {
+				summary += " Auto air-scan was skipped because the added area is larger than " + EditRegionLimiter.MAX_TRAVERSAL_BLOCKS + " blocks.";
+			}
+			return summary;
+		}
 	}
 }

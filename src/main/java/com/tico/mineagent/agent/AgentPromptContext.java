@@ -32,7 +32,10 @@ public final class AgentPromptContext {
 		builder.append("minecraft: 1.21.10\n");
 		builder.append("mod: Fabric MineAgent\n");
 		builder.append("dimension: ").append(player.level().dimension().location()).append('\n');
+		builder.append("player_uuid: ").append(player.getUUID()).append('\n');
 		builder.append("player_block_pos: ").append(pos(player.blockPosition())).append('\n');
+		builder.append("active_project_id: ").append(sandbox.activeProjectId()).append('\n');
+		builder.append("project_boundary: design docs, feature images, and structure traces are scoped to this player's UUID and active project. Do not switch projects unless the player or host explicitly asks.\n");
 		builder.append("</run_environment>\n");
 
 		builder.append("<safety_boundary>\n");
@@ -44,8 +47,13 @@ public final class AgentPromptContext {
 			builder.append("sandbox_max: ").append(pos(max)).append('\n');
 			builder.append("sandbox_size: ").append(size(min, max)).append('\n');
 			builder.append("sandbox_volume_blocks: ").append(volume(min, max)).append('\n');
+			builder.append("active_edit_scope: ").append(sandbox.hasPrototypeSandbox() ? "prototype_sandbox" : "main_sandbox").append('\n');
+			builder.append("active_edit_min: ").append(pos(sandbox.editMin())).append('\n');
+			builder.append("active_edit_max: ").append(pos(sandbox.editMax())).append('\n');
 		}
-		builder.append("write_scope: all model-facing write tools must remain clipped to this sandbox; outside-sandbox edits are skipped and reported.\n");
+		builder.append("prototype_sandbox: ").append(prototypeSummary(sandbox)).append('\n');
+		builder.append("sandbox_permission_mode: ").append(sandbox.permissionMode().id()).append(" (").append(sandbox.permissionMode().label()).append(")\n");
+		builder.append("write_scope: strict mode clips model-facing write tools to the current sandbox. In manual_expand or auto_expand_air mode, justified outside-sandbox operations may request or perform sandbox expansion before execution; tool results and approval outcomes are the source of truth.\n");
 		builder.append("coordinate_contract: use absolute x,y,z or @anchor+dx,dy,dz only; never use Minecraft player-relative ~ syntax.\n");
 		builder.append("execution_contract: provider adapters cannot edit the world directly; every read/write goes through MineAgent tools and server-thread execution.\n");
 		builder.append("</safety_boundary>\n");
@@ -55,6 +63,7 @@ public final class AgentPromptContext {
 		builder.append("anchors: ").append(anchorSummary(sandbox)).append('\n');
 		builder.append("masks: ").append(maskSummary(sandbox)).append('\n');
 		builder.append("clipboard: ").append(clipboardSummary(sandbox.clipboard())).append('\n');
+		builder.append("structure_components: ").append(sandbox.structures().componentCount()).append('\n');
 		builder.append("undo_records: ").append(sandbox.undoCount()).append('\n');
 		builder.append("redo_records: ").append(sandbox.redoCount()).append('\n');
 		builder.append("</session_state>\n");
@@ -128,7 +137,21 @@ public final class AgentPromptContext {
 		return "blocks=" + clipboard.blockCount()
 				+ ", source_min=" + pos(clipboard.sourceMin())
 				+ ", source_max=" + pos(clipboard.sourceMax())
-				+ ", reference=" + pos(clipboard.reference());
+				+ ", reference=" + pos(clipboard.reference())
+				+ ", traced_structure_components=" + clipboard.structureComponents().size();
+	}
+
+	private static String prototypeSummary(SandboxSession sandbox) {
+		SandboxSession.PrototypeSandbox prototype = sandbox.prototypeSandbox();
+		if (prototype == null) {
+			return "inactive";
+		}
+		return "active, min=" + pos(prototype.min())
+				+ ", max=" + pos(prototype.max())
+				+ ", size=" + prototype.size()
+				+ ", volume=" + prototype.volume()
+				+ ", edit_records=" + prototype.usedEditRecords() + "/" + prototype.maxEditRecords()
+				+ ", remaining=" + prototype.remainingEditRecords();
 	}
 
 	private static String imageLabels(List<AgentImageAttachment> images) {

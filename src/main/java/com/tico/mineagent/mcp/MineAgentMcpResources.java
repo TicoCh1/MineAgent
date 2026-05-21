@@ -21,10 +21,13 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
 
 import com.tico.mineagent.clipboard.AgentClipboard;
+import com.tico.mineagent.design.DesignDocumentStore;
 import com.tico.mineagent.history.AgentEditRecord;
 import com.tico.mineagent.mask.AgentMaskDefinition;
 import com.tico.mineagent.palette.BlockPaletteIndex;
+import com.tico.mineagent.project.MineAgentProjectStore;
 import com.tico.mineagent.sandbox.SandboxSession;
+import com.tico.mineagent.structure.StructureComponentStore;
 
 public final class MineAgentMcpResources {
 	private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
@@ -67,12 +70,66 @@ public final class MineAgentMcpResources {
 				"Small index of recent saved capture image metadata. Does not include image bytes.",
 				MineAgentMcpResources::captures));
 		resources.add(resource(
+				"projects://index",
+				"projects_index",
+				"MineAgent player project index",
+				"Read-only index of projects owned by the current player UUID in this Minecraft save. Hosts should select one active project before design work.",
+				MineAgentMcpResources::projectsIndex));
+		resources.add(resource(
+				"structures://components",
+				"structures_components",
+				"MineAgent structure component trace",
+				"Tree of named structure component bboxes for the current player's active project. Does not include block data.",
+				MineAgentMcpResources::structures));
+		resources.add(resource(
+				"design://index",
+				"design_index",
+				"MineAgent active-project design index",
+				"Read-only index of the current player's active-project design docs, feature docs, and saved design images.",
+				MineAgentMcpResources::designIndex));
+		resources.add(resource(
+				"design://agent.md",
+				"design_agent_md",
+				"MineAgent agent.md",
+				"High-priority working rules and player preferences for the current active project.",
+				context -> DesignDocumentStore.resource(context.player(), context.sandbox(), "design://agent.md")));
+		resources.add(resource(
+				"design://brief.md",
+				"design_brief_md",
+				"MineAgent brief.md",
+				"Current design brief, scale analysis, reference synthesis, and build strategy for the active project.",
+				context -> DesignDocumentStore.resource(context.player(), context.sandbox(), "design://brief.md")));
+		resources.add(resource(
+				"design://features",
+				"design_features",
+				"MineAgent design features",
+				"Index of active-project per-feature reference/detail markdown documents.",
+				context -> DesignDocumentStore.resource(context.player(), context.sandbox(), "design://features")));
+		resources.add(resource(
+				"design://images",
+				"design_images",
+				"MineAgent design images",
+				"Index of design-document images saved under the current active project.",
+				context -> DesignDocumentStore.resource(context.player(), context.sandbox(), "design://images")));
+		resources.add(resource(
 				"palette://metadata",
 				"palette_metadata",
 				"Block palette metadata",
 				"Small metadata summary for the Minecraft block color/geometry palette. Use mineagent_block_palette_query for search; the full CSV is large and not recommended for routine model reads.",
 				MineAgentMcpResources::paletteMetadata));
 		return List.copyOf(resources);
+	}
+
+	public static MineAgentMcpResource dynamic(String uri) {
+		if (uri.startsWith("design://features/") || uri.startsWith("design://images/")) {
+			return resource(
+					uri,
+					"design_dynamic",
+					"MineAgent design file",
+					"Read-only MineAgent design file resolved through the current player's active-project resource URI space.",
+					context -> DesignDocumentStore.resource(context.player(), context.sandbox(), uri));
+		}
+		return null;
 	}
 
 	private static MineAgentMcpResource resource(String uri, String name, String title, String description, MineAgentMcpResourceReader reader) {
@@ -85,11 +142,15 @@ public final class MineAgentMcpResources {
 		object.addProperty("resource", "sandbox://current");
 		object.addProperty("player", context.player().getName().getString());
 		object.addProperty("player_uuid", context.player().getUUID().toString());
+		object.addProperty("active_project_id", sandbox.activeProjectId());
+		object.addProperty("projects_resource", "projects://index");
 		ResourceKey<Level> dimension = context.player().level().dimension();
 		object.addProperty("dimension", dimension.location().toString());
 		object.add("player_pos", pos(context.player().blockPosition()));
 		object.addProperty("complete", sandbox.hasCompleteBounds());
 		object.addProperty("selector", sandbox.selectorType().id());
+		object.addProperty("permission_mode", sandbox.permissionMode().id());
+		object.addProperty("permission_mode_label", sandbox.permissionMode().label());
 		if (sandbox.hasCompleteBounds()) {
 			BlockPos min = sandbox.min();
 			BlockPos max = sandbox.max();
@@ -98,8 +159,14 @@ public final class MineAgentMcpResources {
 			object.addProperty("summary", sandbox.boundsSummary());
 			object.addProperty("size", size(min, max));
 			object.addProperty("volume_blocks", volume(min, max));
+			object.add("active_edit_bounds", activeEditBounds(sandbox));
 		}
+		object.add("prototype_sandbox", prototypeSandbox(sandbox.prototypeSandbox()));
 		object.add("clipboard", clipboard(sandbox.clipboard()));
+		JsonObject structures = new JsonObject();
+		structures.addProperty("component_count", sandbox.structures().componentCount());
+		structures.addProperty("resource", "structures://components");
+		object.add("structures", structures);
 		JsonObject history = new JsonObject();
 		history.addProperty("undo_records", sandbox.undoCount());
 		history.addProperty("redo_records", sandbox.redoCount());
@@ -184,6 +251,18 @@ public final class MineAgentMcpResources {
 		return object;
 	}
 
+	private static JsonObject structures(MineAgentMcpContext context) throws IOException {
+		return StructureComponentStore.view(context.player(), context.sandbox());
+	}
+
+	private static JsonObject designIndex(MineAgentMcpContext context) throws IOException {
+		return DesignDocumentStore.index(context.player(), context.sandbox());
+	}
+
+	private static JsonObject projectsIndex(MineAgentMcpContext context) throws IOException {
+		return MineAgentProjectStore.index(context.player(), context.sandbox());
+	}
+
 	private static JsonObject paletteMetadata(MineAgentMcpContext context) throws IOException {
 		BlockPaletteIndex palette = BlockPaletteIndex.load();
 		JsonObject object = new JsonObject();
@@ -230,6 +309,33 @@ public final class MineAgentMcpResources {
 			object.add("source_min", pos(clipboard.sourceMin()));
 			object.add("source_max", pos(clipboard.sourceMax()));
 			object.add("reference", pos(clipboard.reference()));
+			object.addProperty("traced_structure_components", clipboard.structureComponents().size());
+		}
+		return object;
+	}
+
+	private static JsonObject activeEditBounds(SandboxSession sandbox) {
+		JsonObject object = new JsonObject();
+		object.addProperty("scope", sandbox.hasPrototypeSandbox() ? "prototype_sandbox" : "main_sandbox");
+		object.add("min", pos(sandbox.editMin()));
+		object.add("max", pos(sandbox.editMax()));
+		object.addProperty("summary", sandbox.editBoundsSummary());
+		return object;
+	}
+
+	private static JsonObject prototypeSandbox(SandboxSession.PrototypeSandbox prototype) {
+		JsonObject object = new JsonObject();
+		object.addProperty("active", prototype != null);
+		object.addProperty("max_volume_blocks", SandboxSession.MAX_PROTOTYPE_VOLUME);
+		object.addProperty("max_dimension_blocks", SandboxSession.MAX_PROTOTYPE_DIMENSION);
+		object.addProperty("max_edit_records", SandboxSession.MAX_PROTOTYPE_EDIT_RECORDS);
+		if (prototype != null) {
+			object.add("min", pos(prototype.min()));
+			object.add("max", pos(prototype.max()));
+			object.addProperty("size", prototype.size());
+			object.addProperty("volume_blocks", prototype.volume());
+			object.addProperty("used_edit_records", prototype.usedEditRecords());
+			object.addProperty("remaining_edit_records", prototype.remainingEditRecords());
 		}
 		return object;
 	}

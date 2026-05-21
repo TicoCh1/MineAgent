@@ -96,9 +96,10 @@ public final class SandboxBoundaryRenderer {
 		}
 		for (ClientAgentEditBoundsState.EditBounds bounds : agentEditBounds) {
 			AABB agentEditBox = bounds.bounds();
-			drawFrame(lines, pose, agentEditBox.inflate(0.009), camera, 255, 220, 32, 255);
-			drawFrame(lines, pose, agentEditBox.inflate(0.024), camera, 255, 220, 32, 230);
-			drawFrame(lines, pose, agentEditBox.inflate(0.039), camera, 255, 220, 32, 200);
+			BoundsColor color = color(bounds.style());
+			drawFrame(lines, pose, agentEditBox.inflate(0.009), camera, color.red(), color.green(), color.blue(), 255);
+			drawFrame(lines, pose, agentEditBox.inflate(0.024), camera, color.red(), color.green(), color.blue(), 230);
+			drawFrame(lines, pose, agentEditBox.inflate(0.039), camera, color.red(), color.green(), color.blue(), 200);
 		}
 	}
 
@@ -112,8 +113,9 @@ public final class SandboxBoundaryRenderer {
 		}
 		for (ClientAgentEditBoundsState.EditBounds bounds : agentEditBounds) {
 			AABB agentEditBox = bounds.bounds();
-			drawFrame(buffer, pose, agentEditBox.inflate(0.012), camera, 255, 205, 32, 86);
-			drawFrame(buffer, pose, agentEditBox.inflate(0.040), camera, 255, 205, 32, 48);
+			BoundsColor color = color(bounds.style());
+			drawFrame(buffer, pose, agentEditBox.inflate(0.012), camera, color.red(), color.green(), color.blue(), 86);
+			drawFrame(buffer, pose, agentEditBox.inflate(0.040), camera, color.red(), color.green(), color.blue(), 48);
 		}
 
 		MeshData mesh = buffer.buildOrThrow();
@@ -198,6 +200,14 @@ public final class SandboxBoundaryRenderer {
 		line(lines, pose, x2, y1, z2, x2, y2, z2, camera, red, green, blue, alpha);
 	}
 
+	private static BoundsColor color(String style) {
+		return switch (style == null ? "" : style) {
+			case "expansion" -> new BoundsColor(255, 65, 72);
+			case "blocking" -> new BoundsColor(190, 95, 255);
+			default -> new BoundsColor(255, 220, 32);
+		};
+	}
+
 	private static void drawGrid(VertexConsumer lines, PoseStack.Pose pose, AABB box, Vec3 camera, int red, int green, int blue, int alpha) {
 		for (double x = firstInteriorGridLine(box.minX); x < box.maxX - 0.001; x += GRID_STEP) {
 			line(lines, pose, x, box.minY, box.minZ, x, box.minY, box.maxZ, camera, red, green, blue, alpha);
@@ -244,5 +254,8 @@ public final class SandboxBoundaryRenderer {
 		nz /= length;
 		consumer.addVertex(pose, (float) (x1 - camera.x), (float) (y1 - camera.y), (float) (z1 - camera.z)).setColor(red, green, blue, alpha).setNormal(pose, nx, ny, nz);
 		consumer.addVertex(pose, (float) (x2 - camera.x), (float) (y2 - camera.y), (float) (z2 - camera.z)).setColor(red, green, blue, alpha).setNormal(pose, nx, ny, nz);
+	}
+
+	private record BoundsColor(int red, int green, int blue) {
 	}
 }

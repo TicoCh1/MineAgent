@@ -7,6 +7,7 @@ import java.util.List;
 
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.Minecraft;
+import net.minecraft.Util;
 import net.minecraft.resources.ResourceLocation;
 
 import com.tico.mineagent.client.capture.ClientGpuCapture;
@@ -18,6 +19,8 @@ import com.tico.mineagent.client.util.ClientDeferredTasks;
 import com.tico.mineagent.agent.AgentPlanSnapshot;
 import com.tico.mineagent.network.AgentClientSyncAckPayload;
 import com.tico.mineagent.network.AgentClientSyncRequestPayload;
+import com.tico.mineagent.network.AgentSandboxExpansionReplyPayload;
+import com.tico.mineagent.network.AgentSandboxPermissionPayload;
 import com.tico.mineagent.network.GpuCaptureRequestPayload;
 import com.tico.mineagent.network.GpuCaptureResultPayload;
 import com.tico.mineagent.network.AgentUiConfigurePayload;
@@ -28,6 +31,7 @@ import com.tico.mineagent.network.AgentUiStatePayload;
 import com.tico.mineagent.network.AgentUiStopPayload;
 import com.tico.mineagent.network.RaycastRequestPayload;
 import com.tico.mineagent.network.RaycastResultPayload;
+import com.tico.mineagent.network.WebUiOpenPayload;
 import com.tico.mineagent.raycast.RaycastMode;
 
 public final class ClientAgentUiState {
@@ -41,6 +45,10 @@ public final class ClientAgentUiState {
 	private static String currentActivity = "idle";
 	private static boolean awaitingApproval;
 	private static int completedSteps;
+	private static String activeProjectId = "default";
+	private static String sandboxPermissionMode = "strict";
+	private static boolean awaitingSandboxExpansion;
+	private static String sandboxExpansionSummary = "";
 	private static AgentPlanSnapshot plan = AgentPlanSnapshot.empty();
 	private static int raycastSize = 224;
 	private static double raycastFov = 70.0D;
@@ -62,6 +70,10 @@ public final class ClientAgentUiState {
 			status = payload.status();
 			addLog(payload.level(), payload.message(), payload.detail());
 		}));
+		ClientPlayNetworking.registerGlobalReceiver(WebUiOpenPayload.ID, (payload, context) -> context.client().execute(() -> {
+			Util.getPlatform().openUri(payload.url());
+			addLog("ui", "MineAgent Web UI opened: " + payload.url());
+		}));
 		ClientPlayNetworking.registerGlobalReceiver(AgentClientSyncRequestPayload.ID, (payload, context) -> context.client().execute(() -> runClientSyncRequest(payload)));
 		ClientPlayNetworking.registerGlobalReceiver(RaycastRequestPayload.ID, (payload, context) -> context.client().execute(() -> runRaycastRequest(payload)));
 		ClientPlayNetworking.registerGlobalReceiver(GpuCaptureRequestPayload.ID, (payload, context) -> context.client().execute(() -> runGpuCaptureRequest(payload)));
@@ -75,12 +87,12 @@ public final class ClientAgentUiState {
 		ClientPlayNetworking.send(new AgentUiConfigurePayload(providerId, model, apiKey));
 	}
 
-	public static void sendStart(String providerId, String model, String apiKey, String prompt) {
+	public static void sendStart(String providerId, String model, String apiKey, String projectId, boolean continueProject, String prompt) {
 		if (!ClientPlayNetworking.canSend(AgentUiStartPayload.ID)) {
 			addLog("error", "Server is not ready to receive MineAgent agent start requests.");
 			return;
 		}
-		ClientPlayNetworking.send(new AgentUiStartPayload(providerId, model, apiKey, prompt));
+		ClientPlayNetworking.send(new AgentUiStartPayload(providerId, model, apiKey, projectId, continueProject, prompt));
 	}
 
 	public static void sendStop() {
@@ -97,6 +109,22 @@ public final class ClientAgentUiState {
 			return;
 		}
 		ClientPlayNetworking.send(new AgentUiContinuePayload());
+	}
+
+	public static void sendSandboxPermissionMode(String mode) {
+		if (!ClientPlayNetworking.canSend(AgentSandboxPermissionPayload.ID)) {
+			addLog("error", "Server is not ready to receive MineAgent sandbox permission changes.");
+			return;
+		}
+		ClientPlayNetworking.send(new AgentSandboxPermissionPayload(mode));
+	}
+
+	public static void sendSandboxExpansionReply(boolean approve) {
+		if (!ClientPlayNetworking.canSend(AgentSandboxExpansionReplyPayload.ID)) {
+			addLog("error", "Server is not ready to receive MineAgent sandbox expansion approvals.");
+			return;
+		}
+		ClientPlayNetworking.send(new AgentSandboxExpansionReplyPayload(approve));
 	}
 
 	public static RaycastImageSet runRaycast(int requestedSize, double requestedFov) {
@@ -264,6 +292,22 @@ public final class ClientAgentUiState {
 		return completedSteps;
 	}
 
+	public static String activeProjectId() {
+		return activeProjectId;
+	}
+
+	public static String sandboxPermissionMode() {
+		return sandboxPermissionMode;
+	}
+
+	public static boolean awaitingSandboxExpansion() {
+		return awaitingSandboxExpansion;
+	}
+
+	public static String sandboxExpansionSummary() {
+		return sandboxExpansionSummary;
+	}
+
 	public static AgentPlanSnapshot plan() {
 		return plan;
 	}
@@ -330,6 +374,10 @@ public final class ClientAgentUiState {
 		status = payload.status();
 		awaitingApproval = payload.awaitingApproval();
 		completedSteps = payload.completedSteps();
+		activeProjectId = payload.activeProjectId().isBlank() ? "default" : payload.activeProjectId();
+		sandboxPermissionMode = payload.sandboxPermissionMode().isBlank() ? "strict" : payload.sandboxPermissionMode();
+		awaitingSandboxExpansion = payload.awaitingSandboxExpansion();
+		sandboxExpansionSummary = payload.sandboxExpansionSummary();
 		plan = AgentPlanSnapshot.fromJsonString(payload.planJson());
 		if (payload.openScreen()) {
 			addLog("ui", "MineAgent control panel connected.");

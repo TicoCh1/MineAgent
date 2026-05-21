@@ -2,13 +2,13 @@ package com.tico.mineagent.tool;
 
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
-import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 
+import com.tico.mineagent.network.MineAgentNetworking;
 import com.tico.mineagent.sandbox.SandboxSession;
 import com.tico.mineagent.sandbox.SandboxSessions;
 
@@ -29,7 +29,7 @@ public final class SandboxToolEvents {
 
 			session.selectPrimary(pos.immutable());
 			SandboxSessions.sync(serverPlayer);
-			serverPlayer.sendSystemMessage(Component.literal("MineAgent sandbox point 1 set to " + format(pos) + "."));
+			MineAgentNetworking.sendAgentLog(serverPlayer, "ui", "MineAgent sandbox point 1 set to " + format(pos) + ".");
 			return InteractionResult.SUCCESS;
 		});
 
@@ -53,7 +53,7 @@ public final class SandboxToolEvents {
 
 			session.selectSecondary(hitResult.getBlockPos().immutable());
 			SandboxSessions.sync(serverPlayer);
-			serverPlayer.sendSystemMessage(Component.literal("MineAgent sandbox point 2 set to " + format(hitResult.getBlockPos()) + ". Bounds: " + session.boundsSummary()));
+			MineAgentNetworking.sendAgentLog(serverPlayer, "ui", "MineAgent sandbox point 2 set to " + format(hitResult.getBlockPos()) + ". Bounds: " + session.boundsSummary());
 			return InteractionResult.SUCCESS;
 		});
 	}

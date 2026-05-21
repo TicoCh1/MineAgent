@@ -51,11 +51,15 @@ public class MineAgentControlScreen extends Screen {
 	private Button modelButton;
 	private Button refreshModelsButton;
 	private EditBox apiKeyBox;
+	private EditBox projectBox;
 	private EditBox promptBox;
 	private EditBox raycastFovBox;
 	private Button openAiButton;
 	private Button claudeButton;
 	private Button continueButton;
+	private Button sandboxModeButton;
+	private Button expandSandboxButton;
+	private Button rejectSandboxButton;
 	private Button raycastModeButton;
 	private Button[] resolutionButtons = new Button[0];
 	private int panelX;
@@ -75,6 +79,7 @@ public class MineAgentControlScreen extends Screen {
 	@Override
 	protected void init() {
 		String apiKeyDraft = apiKeyBox == null ? "" : apiKeyBox.getValue();
+		String projectDraft = projectBox == null ? ClientAgentUiState.activeProjectId() : projectBox.getValue();
 		String promptDraft = promptBox == null ? "" : promptBox.getValue();
 		String fovDraft = raycastFovBox == null ? String.format(Locale.ROOT, "%.1f", ClientAgentUiState.raycastFov()) : raycastFovBox.getValue();
 		if (!ClientAgentUiState.providerId().isBlank()) {
@@ -140,7 +145,21 @@ public class MineAgentControlScreen extends Screen {
 			ClientAgentUiState.addLocal("Continuation approval sent.");
 		}).bounds(rightX + GAP, rightY + 183, fieldW, 20).build());
 
-		raycastFovBox = addRenderableWidget(new EditBox(font, rightX + GAP, rightY + 227, fieldW, FIELD_HEIGHT, Component.literal("Raycast FOV")));
+		sandboxModeButton = addRenderableWidget(Button.builder(Component.literal("Sandbox"), button -> {
+			String nextMode = nextSandboxMode(ClientAgentUiState.sandboxPermissionMode());
+			ClientAgentUiState.sendSandboxPermissionMode(nextMode);
+			ClientAgentUiState.addLocal("Sandbox permission mode change requested: " + sandboxModeLabel(nextMode) + ".");
+		}).bounds(rightX + GAP, rightY + 209, fieldW, 20).build());
+		expandSandboxButton = addRenderableWidget(Button.builder(Component.literal("Expand Sandbox"), button -> {
+			ClientAgentUiState.sendSandboxExpansionReply(true);
+			ClientAgentUiState.addLocal("Sandbox expansion approval sent.");
+		}).bounds(rightX + GAP, rightY + 235, (fieldW - GAP) / 2, 20).build());
+		rejectSandboxButton = addRenderableWidget(Button.builder(Component.literal("Reject"), button -> {
+			ClientAgentUiState.sendSandboxExpansionReply(false);
+			ClientAgentUiState.addLocal("Sandbox expansion rejection sent.");
+		}).bounds(rightX + GAP + (fieldW + GAP) / 2, rightY + 235, (fieldW - GAP) / 2, 20).build());
+
+		raycastFovBox = addRenderableWidget(new EditBox(font, rightX + GAP, rightY + 269, fieldW, FIELD_HEIGHT, Component.literal("Raycast FOV")));
 		raycastFovBox.setMaxLength(16);
 		raycastFovBox.setValue(fovDraft);
 		raycastFovBox.setHint(Component.literal("FOV degrees"));
@@ -154,24 +173,32 @@ public class MineAgentControlScreen extends Screen {
 			resolutionButtons[i] = addRenderableWidget(Button.builder(Component.literal(Integer.toString(size)), button -> {
 				ClientAgentUiState.setRaycastSize(size);
 				updateResolutionButtons();
-			}).bounds(rightX + GAP + i * (buttonW + GAP), rightY + 255, buttonW, 20).build());
+			}).bounds(rightX + GAP + i * (buttonW + GAP), rightY + 297, buttonW, 20).build());
 			resolutionButtons[i].setMessage(Component.literal(Integer.toString(sizes[index])));
 		}
 		raycastModeButton = addRenderableWidget(Button.builder(Component.literal("Mode: sandbox"), button -> {
 			ClientAgentUiState.toggleRaycastMode();
 			updateRaycastModeButton();
-		}).bounds(rightX + GAP, rightY + 281, (fieldW - GAP) / 2, 20).build());
+		}).bounds(rightX + GAP, rightY + 323, (fieldW - GAP) / 2, 20).build());
 		addRenderableWidget(Button.builder(Component.literal("Raycast"), button -> captureRaycast())
-				.bounds(rightX + GAP + (fieldW + GAP) / 2, rightY + 281, (fieldW - GAP) / 2, 20)
+				.bounds(rightX + GAP + (fieldW + GAP) / 2, rightY + 323, (fieldW - GAP) / 2, 20)
 				.build());
 
 		int promptY = panelY + panelH - bottomH + 12;
-		promptBox = addRenderableWidget(new EditBox(font, panelX + GAP + 48, promptY, panelW - 168, FIELD_HEIGHT, Component.literal("Agent prompt")));
+		projectBox = addRenderableWidget(new EditBox(font, panelX + GAP + 52, promptY, 104, FIELD_HEIGHT, Component.literal("Project")));
+		projectBox.setMaxLength(64);
+		projectBox.setValue(projectDraft == null || projectDraft.isBlank() ? "default" : projectDraft);
+		projectBox.setHint(Component.literal("project id"));
+
+		promptBox = addRenderableWidget(new EditBox(font, panelX + GAP + 206, promptY, panelW - 394, FIELD_HEIGHT, Component.literal("Agent prompt")));
 		promptBox.setMaxLength(4096);
 		promptBox.setValue(promptDraft);
 		promptBox.setHint(Component.literal("Describe the build task for the agent"));
-		addRenderableWidget(Button.builder(Component.literal("Start"), button -> startAgent())
-				.bounds(panelX + panelW - 108, promptY, 48, 20)
+		addRenderableWidget(Button.builder(Component.literal("Start"), button -> startAgent(false))
+				.bounds(panelX + panelW - 176, promptY, 48, 20)
+				.build());
+		addRenderableWidget(Button.builder(Component.literal("Continue"), button -> startAgent(true))
+				.bounds(panelX + panelW - 124, promptY, 64, 20)
 				.build());
 		addRenderableWidget(Button.builder(Component.literal("Close"), button -> onClose())
 				.bounds(panelX + panelW - 56, promptY, 48, 20)
@@ -180,6 +207,7 @@ public class MineAgentControlScreen extends Screen {
 		updateProviderButtons();
 		updateResolutionButtons();
 		updateRaycastModeButton();
+		updateSandboxModeButton();
 		setInitialFocus(promptBox);
 	}
 
@@ -199,7 +227,7 @@ public class MineAgentControlScreen extends Screen {
 	@Override
 	public boolean keyPressed(KeyEvent event) {
 		if (promptBox != null && promptBox.isFocused() && event.isConfirmation()) {
-			startAgent();
+			startAgent(false);
 			return true;
 		}
 		return super.keyPressed(event);
@@ -401,7 +429,8 @@ public class MineAgentControlScreen extends Screen {
 	private void renderPromptBar(GuiGraphics graphics) {
 		int y = panelY + panelH - 42;
 		graphics.fill(panelX + GAP, y, panelX + panelW - GAP, y + 1, 0x66394755);
-		graphics.drawString(font, "Prompt", panelX + GAP + 4, y + 15, MUTED, false);
+		graphics.drawString(font, "Project", panelX + GAP + 4, y + 15, MUTED, false);
+		graphics.drawString(font, "Prompt", panelX + GAP + 162, y + 15, MUTED, false);
 	}
 
 	private void renderRaycastImages(GuiGraphics graphics, RaycastImageSet result, int x, int y, int w, int h) {
@@ -482,15 +511,16 @@ public class MineAgentControlScreen extends Screen {
 		ClientAgentUiState.addLocal("Configuration submitted.");
 	}
 
-	private void startAgent() {
+	private void startAgent(boolean continueProject) {
 		String prompt = promptBox.getValue().trim();
 		String apiKey = apiKeyBox.getValue().trim();
-		ClientAgentUiState.sendStart(normalizedProvider(), selectedModel.trim(), apiKey, prompt);
+		String projectId = projectBox == null ? "" : projectBox.getValue().trim();
+		ClientAgentUiState.sendStart(normalizedProvider(), selectedModel.trim(), apiKey, projectId, continueProject, prompt);
 		if (!apiKey.isBlank()) {
 			apiKeyBox.setValue("");
 		}
 		if (!prompt.isBlank()) {
-			ClientAgentUiState.addLocal("Start request sent: " + prompt);
+			ClientAgentUiState.addLocal((continueProject ? "Continue" : "Start") + " request sent for project " + (projectId.isBlank() ? ClientAgentUiState.activeProjectId() : projectId) + ": " + prompt);
 			promptBox.setValue("");
 			scrollLines = 0;
 		}
@@ -697,6 +727,35 @@ public class MineAgentControlScreen extends Screen {
 		if (continueButton != null) {
 			continueButton.active = ClientAgentUiState.awaitingApproval();
 		}
+		if (expandSandboxButton != null) {
+			expandSandboxButton.active = ClientAgentUiState.awaitingSandboxExpansion();
+		}
+		if (rejectSandboxButton != null) {
+			rejectSandboxButton.active = ClientAgentUiState.awaitingSandboxExpansion();
+		}
+		updateSandboxModeButton();
+	}
+
+	private void updateSandboxModeButton() {
+		if (sandboxModeButton != null) {
+			sandboxModeButton.setMessage(Component.literal("Sandbox: " + sandboxModeLabel(ClientAgentUiState.sandboxPermissionMode())));
+		}
+	}
+
+	private static String nextSandboxMode(String current) {
+		return switch (current) {
+			case "manual_expand" -> "auto_expand_air";
+			case "auto_expand_air" -> "strict";
+			default -> "manual_expand";
+		};
+	}
+
+	private static String sandboxModeLabel(String mode) {
+		return switch (mode) {
+			case "manual_expand" -> "ask";
+			case "auto_expand_air" -> "auto-air";
+			default -> "strict";
+		};
 	}
 
 	private String normalizedProvider() {

@@ -33,12 +33,17 @@ import net.minecraft.world.item.Items;
 
 import com.tico.mineagent.network.MineAgentNetworking;
 import com.tico.mineagent.network.GpuCaptureRequestPayload;
+import com.tico.mineagent.agent.AgentHostMode;
+import com.tico.mineagent.agent.AgentHostModes;
 import com.tico.mineagent.history.AgentEditRecord;
 import com.tico.mineagent.geometry.GeometryEditResult;
+import com.tico.mineagent.mcp.MineAgentMcpServer;
 import com.tico.mineagent.raycast.RaycastMode;
+import com.tico.mineagent.sandbox.SandboxPermissionMode;
 import com.tico.mineagent.sandbox.SandboxSelectorType;
 import com.tico.mineagent.sandbox.SandboxSession;
 import com.tico.mineagent.sandbox.SandboxSessions;
+import com.tico.mineagent.web.MineAgentWebHost;
 
 public final class MineAgentCommands {
 	private static final SimpleCommandExceptionType INCOMPLETE_SANDBOX = new SimpleCommandExceptionType(
@@ -51,6 +56,9 @@ public final class MineAgentCommands {
 	private static final Map<String, Direction> NAME_TO_DIRECTION_MAP = createDirectionNameMap();
 	private static final String[] DIRECTION_SUGGESTIONS = new String[] {
 			"me", "forward", "back", "left", "right", "up", "down", "north", "south", "east", "west"
+	};
+	private static final String[] SANDBOX_PERMISSION_SUGGESTIONS = new String[] {
+			"strict", "manual_expand", "auto_expand_air"
 	};
 
 	private MineAgentCommands() {
@@ -67,9 +75,11 @@ public final class MineAgentCommands {
 	private static void registerRoot(CommandDispatcher<CommandSourceStack> dispatcher, CommandBuildContext registryAccess, String literal) {
 		dispatcher.register(Commands.literal(literal)
 				.requires(source -> source.hasPermission(2))
-				.executes(MineAgentCommands::startPlaceholder)
+				.executes(context -> startWeb(context, registryAccess, MineAgentWebHost.defaultPort()))
 				.then(MineAgentAgentCommands.configure())
 				.then(MineAgentAgentCommands.agent(registryAccess))
+				.then(web(registryAccess))
+				.then(codex(registryAccess))
 				.then(Commands.literal("tool")
 						.executes(MineAgentCommands::bindTool))
 				.then(Commands.literal("sel")
@@ -77,6 +87,11 @@ public final class MineAgentCommands {
 						.then(Commands.argument("selector", StringArgumentType.word())
 								.suggests((context, builder) -> SharedSuggestionProvider.suggest(SandboxSelectorType.suggestions(), builder))
 								.executes(MineAgentCommands::setSelector)))
+				.then(Commands.literal("permission")
+						.executes(MineAgentCommands::showSandboxPermission)
+						.then(Commands.argument("mode", StringArgumentType.word())
+								.suggests((context, builder) -> SharedSuggestionProvider.suggest(SANDBOX_PERMISSION_SUGGESTIONS, builder))
+								.executes(MineAgentCommands::setSandboxPermission)))
 				.then(expandLike("expand", MineAgentCommands::expand, true))
 				.then(expandLike("contract", MineAgentCommands::contract, false))
 				.then(shift())
@@ -191,9 +206,99 @@ public final class MineAgentCommands {
 						.executes(context -> applyHistory(context, IntegerArgumentType.getInteger(context, "steps"), undo)));
 	}
 
-	private static int startPlaceholder(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+	private static LiteralArgumentBuilder<CommandSourceStack> web(CommandBuildContext registryAccess) {
+		return Commands.literal("web")
+				.executes(context -> startWeb(context, registryAccess, MineAgentWebHost.defaultPort()))
+				.then(Commands.literal("start")
+						.executes(context -> startWeb(context, registryAccess, MineAgentWebHost.defaultPort()))
+						.then(Commands.argument("port", IntegerArgumentType.integer(1024, 65535))
+								.executes(context -> startWeb(context, registryAccess, IntegerArgumentType.getInteger(context, "port")))))
+				.then(Commands.literal("stop")
+						.executes(MineAgentCommands::stopWeb))
+				.then(Commands.literal("status")
+						.executes(MineAgentCommands::webStatus));
+	}
+
+	private static LiteralArgumentBuilder<CommandSourceStack> codex(CommandBuildContext registryAccess) {
+		return Commands.literal("codex")
+				.executes(context -> startCodexHost(context, registryAccess, MineAgentMcpServer.defaultPort()))
+				.then(Commands.argument("port", IntegerArgumentType.integer(1024, 65535))
+						.executes(context -> startCodexHost(context, registryAccess, IntegerArgumentType.getInteger(context, "port"))));
+	}
+
+	private static int startWeb(CommandContext<CommandSourceStack> context, CommandBuildContext registryAccess) throws CommandSyntaxException {
+		return startWeb(context, registryAccess, MineAgentWebHost.defaultPort());
+	}
+
+	private static int startWeb(CommandContext<CommandSourceStack> context, CommandBuildContext registryAccess, int port) throws CommandSyntaxException {
 		ServerPlayer player = context.getSource().getPlayerOrException();
-		MineAgentNetworking.openAgentUi(player);
+		CommandBuildContext resolvedRegistry = registryAccess;
+		if (resolvedRegistry == null) {
+			player.sendSystemMessage(Component.literal("MineAgent Web UI cannot start yet because command registry context is not ready."));
+			return 0;
+		}
+		MineAgentWebHost.StartResult result = MineAgentWebHost.instance().start(player, resolvedRegistry, port, false);
+		MineAgentNetworking.sendAgentLog(player, result.ok() ? "ui" : "error", result.message());
+		if (result.ok()) {
+			if (result.newlyStarted()) {
+				MineAgentNetworking.openWebUi(player, result.url());
+				MineAgentNetworking.sendAgentLog(player, "ui", "Open MineAgent Web UI: " + result.url());
+			} else {
+				MineAgentNetworking.sendAgentLog(player, "warn", "MineAgent Web UI is already open at " + result.url() + ". Use the existing browser tab to avoid duplicate pages.");
+			}
+		}
+		return result.ok() ? 1 : 0;
+	}
+
+	private static int startCodexHost(CommandContext<CommandSourceStack> context, CommandBuildContext registryAccess, int port) throws CommandSyntaxException {
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		if (registryAccess == null) {
+			MineAgentNetworking.sendAgentLog(player, "error", "MineAgent Codex host cannot start yet because command registry context is not ready.");
+			return 0;
+		}
+		MineAgentMcpServer.StartResult result = MineAgentMcpServer.instance().start(player, registryAccess, port);
+		MineAgentNetworking.sendAgentLog(player, result.ok() ? "ui" : "error", result.message());
+		if (!result.ok()) {
+			return 0;
+		}
+		AgentHostModes.set(player, AgentHostMode.EXTERNAL);
+		MineAgentNetworking.sendAgentLog(player, "ok", "MineAgent host mode set to external for Codex MCP.");
+		MineAgentNetworking.sendAgentLog(player, "ui", "Add this to Codex config.toml: [mcp_servers.mineagent] url = \"" + result.url() + "\"");
+		MineAgentNetworking.sendAgentLog(player, "ui", "Recommended Codex MCP options: enabled = true, default_tools_approval_mode = \"prompt\", tool_timeout_sec = 120.");
+		return 1;
+	}
+
+	private static int stopWeb(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		MineAgentWebHost.instance().stop();
+		MineAgentNetworking.sendAgentLog(player, "ui", "MineAgent Web UI stopped.");
+		return 1;
+	}
+
+	private static int webStatus(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		MineAgentNetworking.sendAgentLog(player, "ui", "MineAgent Web UI: " + MineAgentWebHost.instance().status());
+		return 1;
+	}
+
+	private static int showSandboxPermission(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		SandboxPermissionMode mode = SandboxSessions.get(player).permissionMode();
+		MineAgentNetworking.sendAgentLog(player, "ui", "MineAgent sandbox permission mode: " + mode.id() + " (" + mode.label() + ").");
+		return 1;
+	}
+
+	private static int setSandboxPermission(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+		ServerPlayer player = context.getSource().getPlayerOrException();
+		String raw = StringArgumentType.getString(context, "mode");
+		SandboxPermissionMode mode = SandboxPermissionMode.byId(raw);
+		if (mode == null) {
+			MineAgentNetworking.sendAgentLog(player, "error", "Unknown MineAgent sandbox permission mode: " + raw);
+			return 0;
+		}
+		SandboxSessions.get(player).setPermissionMode(mode);
+		MineAgentNetworking.sendAgentState(player);
+		MineAgentNetworking.sendAgentLog(player, "ok", "MineAgent sandbox permission mode set to " + mode.id() + " (" + mode.label() + ").");
 		return 1;
 	}
 
@@ -526,7 +631,7 @@ public final class MineAgentCommands {
 
 	private static void sendSandboxSummary(ServerPlayer player, String action) {
 		SandboxSession session = SandboxSessions.get(player);
-		player.sendSystemMessage(Component.literal(action + ": " + session.boundsSummary()));
+		MineAgentNetworking.sendAgentLog(player, "ui", action + ": " + session.boundsSummary());
 	}
 
 	@FunctionalInterface

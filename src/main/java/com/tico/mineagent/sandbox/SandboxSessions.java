@@ -8,6 +8,8 @@ import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.GameType;
 
+import com.tico.mineagent.project.MineAgentProjectStore;
+
 public final class SandboxSessions {
 	private static final Map<UUID, SandboxSession> SESSIONS = new ConcurrentHashMap<>();
 
@@ -15,7 +17,16 @@ public final class SandboxSessions {
 	}
 
 	public static SandboxSession get(ServerPlayer player) {
-		return SESSIONS.computeIfAbsent(player.getUUID(), ignored -> new SandboxSession());
+		return SESSIONS.computeIfAbsent(player.getUUID(), ignored -> {
+			SandboxSession session = new SandboxSession();
+			try {
+				session.setActiveProjectId(MineAgentProjectStore.readActiveProjectId(player));
+				MineAgentProjectStore.ensureActiveProject(player, session);
+			} catch (Exception ignoredException) {
+				session.setActiveProjectId(MineAgentProjectStore.DEFAULT_PROJECT_ID);
+			}
+			return session;
+		});
 	}
 
 	public static boolean effectiveToolEnabled(ServerPlayer player) {

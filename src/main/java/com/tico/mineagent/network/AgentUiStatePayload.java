@@ -15,6 +15,10 @@ public record AgentUiStatePayload(
 		String status,
 		boolean awaitingApproval,
 		int completedSteps,
+		String activeProjectId,
+		String sandboxPermissionMode,
+		boolean awaitingSandboxExpansion,
+		String sandboxExpansionSummary,
 		String planJson) implements CustomPacketPayload {
 	private static final int MAX_TEXT_LENGTH = 2048;
 	private static final int MAX_PLAN_LENGTH = 8192;
@@ -35,6 +39,10 @@ public record AgentUiStatePayload(
 		buffer.writeUtf(payload.status(), MAX_TEXT_LENGTH);
 		buffer.writeBoolean(payload.awaitingApproval());
 		buffer.writeInt(payload.completedSteps());
+		buffer.writeUtf(payload.activeProjectId(), MAX_TEXT_LENGTH);
+		buffer.writeUtf(payload.sandboxPermissionMode(), MAX_TEXT_LENGTH);
+		buffer.writeBoolean(payload.awaitingSandboxExpansion());
+		buffer.writeUtf(payload.sandboxExpansionSummary(), MAX_PLAN_LENGTH);
 		buffer.writeUtf(payload.planJson(), MAX_PLAN_LENGTH);
 	}
 
@@ -47,6 +55,10 @@ public record AgentUiStatePayload(
 				buffer.readUtf(MAX_TEXT_LENGTH),
 				buffer.readBoolean(),
 				buffer.readInt(),
+				buffer.readUtf(MAX_TEXT_LENGTH),
+				buffer.readUtf(MAX_TEXT_LENGTH),
+				buffer.readBoolean(),
+				buffer.readUtf(MAX_PLAN_LENGTH),
 				buffer.readUtf(MAX_PLAN_LENGTH));
 	}
 }

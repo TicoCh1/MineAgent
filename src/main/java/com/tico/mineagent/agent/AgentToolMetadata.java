@@ -20,6 +20,8 @@ public record AgentToolMetadata(
 			case "mineagent_get_sandbox" -> metadata("Get Sandbox", "Context", true, false, false, false, false, false, false);
 			case AgentHostToolRegistry.UPDATE_PLAN_TOOL -> metadata("Update Plan", "Host State", false, false, false, false, false, false, false);
 			case "mineagent_block_palette_query" -> metadata("Block Palette Query", "Palette", true, false, false, false, false, false, false);
+			case MineAgentToolRegistry.BLOCK_FIND_TOOL -> metadata("Find Blocks", "Block Query", true, false, false, false, false, false, false);
+			case MineAgentToolRegistry.BLOCK_DEBUG_3X3_TOOL -> metadata("Debug 3x3 Blocks", "Block Query", true, false, false, false, false, false, false);
 			case MineAgentToolRegistry.CLIENT_RAYCAST_TOOL -> metadata("Raycast Capture", "Perception", true, false, false, true, false, true, false);
 			case MineAgentToolRegistry.CLIENT_VIRTUAL_CAMERA_TOOL -> metadata("Virtual Camera Capture", "Perception", true, false, false, true, false, true, false);
 			case MineAgentToolRegistry.CLIENT_SANDBOX_ISOMETRIC_TOOL -> metadata("Sandbox Isometric Capture", "Perception", true, false, false, true, false, true, false);
@@ -27,7 +29,19 @@ public record AgentToolMetadata(
 			case "mineagent_mask_list" -> metadata("List Masks", "Context", true, false, false, false, false, false, false);
 			case "mineagent_mask_delete" -> metadata("Delete Mask", "Setup", false, false, false, false, true, false, false);
 			case "mineagent_set_anchor" -> metadata("Set Anchor", "Setup", false, false, false, false, true, true, false);
+			case "mineagent_prototype_sandbox_create" -> metadata("Create Prototype Sandbox", "Setup", false, false, false, false, true, true, false);
+			case "mineagent_prototype_sandbox_clear" -> metadata("Clear Prototype Sandbox", "Setup", false, false, false, false, true, false, false);
+			case "mineagent_project_list" -> metadata("List Projects", "Project", true, false, false, false, false, false, false);
+			case "mineagent_project_select" -> metadata("Select Project", "Project", false, false, false, false, true, false, false);
+			case "mineagent_structure_define" -> metadata("Define Structure Component", "Structure Trace", false, false, false, false, true, true, false);
+			case "mineagent_structure_list" -> metadata("List Structure Components", "Structure Trace", true, false, false, false, false, false, false);
+			case MineAgentToolRegistry.STRUCTURE_COMPARE_BBOXES_TOOL -> metadata("Compare Structure Bboxes", "Structure Trace", true, false, false, false, false, true, false);
+			case "mineagent_structure_sequence_optimize" -> metadata("Optimize Structure Sequence", "Structure Trace", true, false, false, false, false, false, false);
+			case "mineagent_design_doc_write" -> metadata("Write Design Doc", "Design Docs", false, false, false, false, true, false, false);
+			case "mineagent_design_doc_read" -> metadata("Read Design Doc", "Design Docs", true, false, false, false, false, false, false);
+			case "mineagent_design_image_delete" -> metadata("Delete Design Image", "Design Docs", false, true, false, false, true, false, false);
 			case "mineagent_set_block" -> edit("Set Block");
+			case MineAgentToolRegistry.GEN_TOOL -> edit("Generate Expression");
 			case "mineagent_box_corners" -> edit("Box From Corners");
 			case "mineagent_box_origin" -> edit("Box From Origin");
 			case "mineagent_ellipsoid_center" -> edit("Ellipsoid From Center");
@@ -40,6 +54,8 @@ public record AgentToolMetadata(
 			case "mineagent_copy" -> metadata("Copy", "Clipboard/Transform", false, false, true, false, false, true, false);
 			case "mineagent_paste" -> metadata("Paste", "Clipboard/Transform", false, true, true, false, false, true, true);
 			case "mineagent_stack" -> metadata("Stack", "Clipboard/Transform", false, true, true, false, false, true, true);
+			case "mineagent_rotate" -> metadata("Rotate", "Clipboard/Transform", false, true, true, false, false, true, true);
+			case "mineagent_flip" -> metadata("Flip", "Clipboard/Transform", false, true, true, false, false, true, true);
 			case "mineagent_undo" -> metadata("Undo", "History", false, true, true, false, false, true, true);
 			case "mineagent_redo" -> metadata("Redo", "History", false, true, true, false, false, true, true);
 			default -> metadata(name, "Uncategorized", fallbackReadOnly, false, false, false, false, false, false);

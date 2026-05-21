@@ -12,7 +12,8 @@ public record AgentEditBoundsPayload(
 		boolean visible,
 		BlockPos min,
 		BlockPos max,
-		String label) implements CustomPacketPayload {
+		String label,
+		String style) implements CustomPacketPayload {
 	public static final ResourceLocation PAYLOAD_ID = ResourceLocation.fromNamespaceAndPath(MineAgent.MOD_ID, "agent_edit_bounds");
 	public static final Type<AgentEditBoundsPayload> ID = new Type<>(PAYLOAD_ID);
 	public static final StreamCodec<RegistryFriendlyByteBuf, AgentEditBoundsPayload> CODEC = StreamCodec.of(AgentEditBoundsPayload::write, AgentEditBoundsPayload::read);
@@ -27,6 +28,7 @@ public record AgentEditBoundsPayload(
 		buffer.writeBlockPos(payload.min());
 		buffer.writeBlockPos(payload.max());
 		buffer.writeUtf(payload.label());
+		buffer.writeUtf(payload.style());
 	}
 
 	private static AgentEditBoundsPayload read(RegistryFriendlyByteBuf buffer) {
@@ -34,6 +36,7 @@ public record AgentEditBoundsPayload(
 				buffer.readBoolean(),
 				buffer.readBlockPos(),
 				buffer.readBlockPos(),
+				buffer.readUtf(),
 				buffer.readUtf());
 	}
 }

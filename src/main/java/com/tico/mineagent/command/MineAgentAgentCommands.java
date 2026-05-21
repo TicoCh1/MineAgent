@@ -25,6 +25,7 @@ import com.tico.mineagent.agent.AgentHostModes;
 import com.tico.mineagent.agent.AgentProviderType;
 import com.tico.mineagent.agent.AgentRuntime;
 import com.tico.mineagent.mcp.MineAgentMcpServer;
+import com.tico.mineagent.web.MineAgentWebHost;
 
 public final class MineAgentAgentCommands {
 	private static final DynamicCommandExceptionType UNKNOWN_PROVIDER = new DynamicCommandExceptionType(
@@ -70,7 +71,8 @@ public final class MineAgentAgentCommands {
 		player.sendSystemMessage(Component.literal("2) Configure one in-memory API session: //mineagent config <openai|claude> <model> <api_key>"));
 		player.sendSystemMessage(Component.literal("   Environment alternative: OPENAI_API_KEY + MINEAGENT_OPENAI_MODEL, or ANTHROPIC_API_KEY + MINEAGENT_CLAUDE_MODEL."));
 		player.sendSystemMessage(Component.literal("   Warning: commands may be visible in server logs. Prefer env vars outside private single-player tests."));
-		player.sendSystemMessage(Component.literal("3) Start: //mineagent agent start <building task>"));
+		player.sendSystemMessage(Component.literal("3) Preferred host UI: //mineagent web start, then use the local browser UI."));
+		player.sendSystemMessage(Component.literal("   Command-only start: //mineagent agent start <building task>"));
 		player.sendSystemMessage(Component.literal("   External host option: //mineagent agent mcp start, then connect Codex/Claude to the printed MCP URL."));
 		Optional<AgentCredentials> configured = AgentConfigStore.configured(player);
 		configured.ifPresent(credentials -> player.sendSystemMessage(Component.literal("Current in-memory config: " + credentials.safeSummary())));
@@ -164,7 +166,7 @@ public final class MineAgentAgentCommands {
 			return 0;
 		}
 
-		AgentRuntime.StartResult result = AgentRuntime.instance().start(player, provider, prompt, registryAccess);
+		AgentRuntime.StartResult result = AgentRuntime.instance().start(player, provider, prompt, registryAccess, false);
 		if (result.status() == AgentRuntime.StartStatus.MISSING_CONFIG) {
 			player.sendSystemMessage(Component.literal(result.message()));
 			showSetupHint(context);
@@ -178,6 +180,7 @@ public final class MineAgentAgentCommands {
 		ServerPlayer player = context.getSource().getPlayerOrException();
 		player.sendSystemMessage(Component.literal("MineAgent host mode: " + AgentHostModes.get(player).id()));
 		player.sendSystemMessage(Component.literal("MineAgent agent status: " + AgentRuntime.instance().status(player)));
+		player.sendSystemMessage(Component.literal("MineAgent Web UI: " + MineAgentWebHost.instance().status()));
 		player.sendSystemMessage(Component.literal("MineAgent external MCP: " + MineAgentMcpServer.instance().status()));
 		return 1;
 	}

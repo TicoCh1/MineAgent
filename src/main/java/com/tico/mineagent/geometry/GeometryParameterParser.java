@@ -135,9 +135,9 @@ public final class GeometryParameterParser {
 
 		String offsetText = raw.substring(offsetStart);
 		String[] parts = splitCoordinate(offsetText);
-		int x = anchor.getX() + parseOffsetPart(parts[0], "x offset in " + raw, warnings);
-		int y = anchor.getY() + parseOffsetPart(parts[1], "y offset in " + raw, warnings);
-		int z = anchor.getZ() + parseOffsetPart(parts[2], "z offset in " + raw, warnings);
+		int x = EditRegionLimiter.clampToBlockCoordinate((long) anchor.getX() + parseOffsetPart(parts[0], "x offset in " + raw, warnings), "x coordinate in " + raw, warnings);
+		int y = EditRegionLimiter.clampToBlockCoordinate((long) anchor.getY() + parseOffsetPart(parts[1], "y offset in " + raw, warnings), "y coordinate in " + raw, warnings);
+		int z = EditRegionLimiter.clampToBlockCoordinate((long) anchor.getZ() + parseOffsetPart(parts[2], "z offset in " + raw, warnings), "z coordinate in " + raw, warnings);
 		return new ParsedBlockPos(new BlockPos(x, y, z), warnings);
 	}
 

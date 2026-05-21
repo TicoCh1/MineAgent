@@ -15,17 +15,27 @@ import com.tico.mineagent.clipboard.AgentClipboard;
 import com.tico.mineagent.history.AgentEditRecord;
 import com.tico.mineagent.mask.AgentMaskDefinition;
 import com.tico.mineagent.network.SandboxStatePayload;
+import com.tico.mineagent.structure.StructureComponentTracker;
 
 public final class SandboxSession {
 	private static final int MAX_HISTORY_RECORDS = 32;
+	public static final int MAX_PROTOTYPE_VOLUME = 4096;
+	public static final int MAX_PROTOTYPE_DIMENSION = 64;
+	public static final int MAX_PROTOTYPE_EDIT_RECORDS = 128;
 	private boolean toolEnabled;
 	private SandboxSelectorType selectorType = SandboxSelectorType.CUBOID;
+	private SandboxPermissionMode permissionMode = SandboxPermissionMode.STRICT;
 	private BlockPos primary;
 	private BlockPos secondary;
+	private BlockPos prototypeMin;
+	private BlockPos prototypeMax;
+	private int prototypeEditRecords;
+	private String activeProjectId = "default";
 	private final Map<String, BlockPos> anchors = new HashMap<>();
 	private final Map<String, AgentMaskDefinition> masks = new HashMap<>();
 	private final Deque<AgentEditRecord> undoHistory = new ArrayDeque<>();
 	private final Deque<AgentEditRecord> redoHistory = new ArrayDeque<>();
+	private final Map<String, StructureComponentTracker> structuresByProject = new HashMap<>();
 	private AgentClipboard clipboard;
 
 	public boolean toolEnabled() {
@@ -45,6 +55,7 @@ public final class SandboxSession {
 			return;
 		}
 
+		clearPrototypeSandbox();
 		this.selectorType = selectorType;
 		if (selectorType == SandboxSelectorType.EXTENDING_CUBOID && hasCompleteBounds()) {
 			primary = min();
@@ -52,7 +63,16 @@ public final class SandboxSession {
 		}
 	}
 
+	public SandboxPermissionMode permissionMode() {
+		return permissionMode;
+	}
+
+	public void setPermissionMode(SandboxPermissionMode permissionMode) {
+		this.permissionMode = permissionMode == null ? SandboxPermissionMode.STRICT : permissionMode;
+	}
+
 	public void selectPrimary(BlockPos pos) {
+		clearPrototypeSandbox();
 		if (selectorType == SandboxSelectorType.EXTENDING_CUBOID) {
 			primary = pos;
 			secondary = pos;
@@ -63,6 +83,7 @@ public final class SandboxSession {
 	}
 
 	public void selectSecondary(BlockPos pos) {
+		clearPrototypeSandbox();
 		if (selectorType == SandboxSelectorType.EXTENDING_CUBOID) {
 			if (primary == null || secondary == null) {
 				selectPrimary(pos);
@@ -93,6 +114,82 @@ public final class SandboxSession {
 		return primary != null && secondary != null;
 	}
 
+	public PrototypeSandbox createPrototypeSandbox(BlockPos first, BlockPos second) {
+		if (!hasCompleteBounds()) {
+			throw new IllegalStateException("MineAgent sandbox is incomplete. Select the main sandbox before creating a prototype sandbox.");
+		}
+		BlockPos min = new BlockPos(
+				Math.min(first.getX(), second.getX()),
+				Math.min(first.getY(), second.getY()),
+				Math.min(first.getZ(), second.getZ()));
+		BlockPos max = new BlockPos(
+				Math.max(first.getX(), second.getX()),
+				Math.max(first.getY(), second.getY()),
+				Math.max(first.getZ(), second.getZ()));
+		int sizeX = max.getX() - min.getX() + 1;
+		int sizeY = max.getY() - min.getY() + 1;
+		int sizeZ = max.getZ() - min.getZ() + 1;
+		long volume = (long) sizeX * sizeY * sizeZ;
+		if (sizeX > MAX_PROTOTYPE_DIMENSION || sizeY > MAX_PROTOTYPE_DIMENSION || sizeZ > MAX_PROTOTYPE_DIMENSION) {
+			throw new IllegalArgumentException("Prototype sandbox dimensions must each be <= " + MAX_PROTOTYPE_DIMENSION + " blocks. Requested " + sizeX + "x" + sizeY + "x" + sizeZ + ".");
+		}
+		if (volume > MAX_PROTOTYPE_VOLUME) {
+			throw new IllegalArgumentException("Prototype sandbox volume must be <= " + MAX_PROTOTYPE_VOLUME + " blocks. Requested " + volume + ".");
+		}
+		if (!contains(min(), max(), min) || !contains(min(), max(), max)) {
+			throw new IllegalArgumentException("Prototype sandbox must be fully inside the main MineAgent sandbox.");
+		}
+
+		prototypeMin = min;
+		prototypeMax = max;
+		prototypeEditRecords = 0;
+		return prototypeSandbox();
+	}
+
+	public boolean clearPrototypeSandbox() {
+		boolean hadPrototype = hasPrototypeSandbox();
+		prototypeMin = null;
+		prototypeMax = null;
+		prototypeEditRecords = 0;
+		return hadPrototype;
+	}
+
+	public boolean hasPrototypeSandbox() {
+		return prototypeMin != null && prototypeMax != null;
+	}
+
+	public PrototypeSandbox prototypeSandbox() {
+		if (!hasPrototypeSandbox()) {
+			return null;
+		}
+		return new PrototypeSandbox(prototypeMin, prototypeMax, prototypeEditRecords, MAX_PROTOTYPE_EDIT_RECORDS);
+	}
+
+	public BlockPos editMin() {
+		return hasPrototypeSandbox() ? prototypeMin : min();
+	}
+
+	public BlockPos editMax() {
+		return hasPrototypeSandbox() ? prototypeMax : max();
+	}
+
+	public String editBoundaryName() {
+		return hasPrototypeSandbox() ? "prototype sandbox" : "sandbox";
+	}
+
+	public String editBoundsSummary() {
+		BlockPos min = editMin();
+		BlockPos max = editMax();
+		return "(%d, %d, %d) -> (%d, %d, %d)".formatted(min.getX(), min.getY(), min.getZ(), max.getX(), max.getY(), max.getZ());
+	}
+
+	public void requirePrototypeEditSlot(String operation) {
+		if (hasPrototypeSandbox() && prototypeEditRecords >= MAX_PROTOTYPE_EDIT_RECORDS) {
+			throw new IllegalStateException(operation + " cannot run in the active prototype sandbox because its "
+					+ MAX_PROTOTYPE_EDIT_RECORDS + "-edit-record budget is exhausted. Clear or recreate the prototype sandbox.");
+		}
+	}
+
 	public void setAnchor(String name, BlockPos pos) {
 		anchors.put(normalizeAnchorName(name), pos);
 	}
@@ -117,6 +214,24 @@ public final class SandboxSession {
 		return Collections.unmodifiableMap(masks);
 	}
 
+	public String activeProjectId() {
+		return activeProjectId;
+	}
+
+	public void setActiveProjectId(String activeProjectId) {
+		String next = activeProjectId == null || activeProjectId.isBlank() ? "default" : activeProjectId;
+		if (this.activeProjectId.equals(next)) {
+			return;
+		}
+		this.activeProjectId = next;
+		this.clipboard = null;
+		clearPrototypeSandbox();
+	}
+
+	public StructureComponentTracker structures() {
+		return structuresByProject.computeIfAbsent(activeProjectId, ignored -> new StructureComponentTracker());
+	}
+
 	public boolean removeMask(String name) {
 		return masks.remove(AgentMaskDefinition.normalizeName(name)) != null;
 	}
@@ -133,10 +248,14 @@ public final class SandboxSession {
 		if (record == null || record.empty()) {
 			return;
 		}
+		requirePrototypeEditSlot(record.label());
 		undoHistory.push(record);
 		redoHistory.clear();
 		while (undoHistory.size() > MAX_HISTORY_RECORDS) {
 			undoHistory.removeLast();
+		}
+		if (hasPrototypeSandbox()) {
+			prototypeEditRecords++;
 		}
 	}
 
@@ -202,6 +321,20 @@ public final class SandboxSession {
 		BlockPos min = min();
 		BlockPos max = max();
 		setBounds(new BlockPos(min.getX(), minY, min.getZ()), new BlockPos(max.getX(), maxY, max.getZ()));
+	}
+
+	public void expandToInclude(BlockPos requestedMin, BlockPos requestedMax) {
+		BlockPos min = min();
+		BlockPos max = max();
+		setBounds(
+				new BlockPos(
+						Math.min(min.getX(), requestedMin.getX()),
+						Math.min(min.getY(), requestedMin.getY()),
+						Math.min(min.getZ(), requestedMin.getZ())),
+				new BlockPos(
+						Math.max(max.getX(), requestedMax.getX()),
+						Math.max(max.getY(), requestedMax.getY()),
+						Math.max(max.getZ(), requestedMax.getZ())));
 	}
 
 	public void expand(List<Direction> directions, int amount, int reverseAmount) {
@@ -297,9 +430,20 @@ public final class SandboxSession {
 				secondary != null ? secondary : BlockPos.ZERO);
 	}
 
-	private void setBounds(BlockPos min, BlockPos max) {
+	public void setBounds(BlockPos first, BlockPos second) {
+		BlockPos min = new BlockPos(
+				Math.min(first.getX(), second.getX()),
+				Math.min(first.getY(), second.getY()),
+				Math.min(first.getZ(), second.getZ()));
+		BlockPos max = new BlockPos(
+				Math.max(first.getX(), second.getX()),
+				Math.max(first.getY(), second.getY()),
+				Math.max(first.getZ(), second.getZ()));
 		primary = min;
 		secondary = max;
+		if (hasPrototypeSandbox() && (!contains(min, max, prototypeMin) || !contains(min, max, prototypeMax))) {
+			clearPrototypeSandbox();
+		}
 	}
 
 	private static Bounds expand(Bounds bounds, Direction direction, int amount) {
@@ -397,5 +541,26 @@ public final class SandboxSession {
 	}
 
 	private record Bounds(BlockPos min, BlockPos max) {
+	}
+
+	public record PrototypeSandbox(BlockPos min, BlockPos max, int usedEditRecords, int maxEditRecords) {
+		public PrototypeSandbox {
+			min = min.immutable();
+			max = max.immutable();
+		}
+
+		public int remainingEditRecords() {
+			return Math.max(0, maxEditRecords - usedEditRecords);
+		}
+
+		public String size() {
+			return "%dx%dx%d".formatted(max.getX() - min.getX() + 1, max.getY() - min.getY() + 1, max.getZ() - min.getZ() + 1);
+		}
+
+		public long volume() {
+			return (long) (max.getX() - min.getX() + 1)
+					* (max.getY() - min.getY() + 1L)
+					* (max.getZ() - min.getZ() + 1L);
+		}
 	}
 }

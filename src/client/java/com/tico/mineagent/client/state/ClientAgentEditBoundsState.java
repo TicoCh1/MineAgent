@@ -21,7 +21,7 @@ public final class ClientAgentEditBoundsState {
 				ENTRIES.clear();
 				return;
 			}
-			ENTRIES.add(new EditBounds(payload.min(), payload.max(), payload.label()));
+			ENTRIES.add(new EditBounds(payload.min(), payload.max(), payload.label(), payload.style()));
 		}));
 	}
 
@@ -33,7 +33,7 @@ public final class ClientAgentEditBoundsState {
 		return List.copyOf(ENTRIES);
 	}
 
-	public record EditBounds(BlockPos min, BlockPos max, String label) {
+	public record EditBounds(BlockPos min, BlockPos max, String label, String style) {
 		public AABB bounds() {
 			return new AABB(
 					min.getX(),

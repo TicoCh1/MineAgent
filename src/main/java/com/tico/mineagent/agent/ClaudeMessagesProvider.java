@@ -24,14 +24,20 @@ public final class ClaudeMessagesProvider implements AgentModelProvider {
 			.build();
 
 	@Override
-	public AgentConversation start(AgentCredentials credentials, String prompt, String initialContext, List<AgentImageAttachment> initialImages) throws Exception {
-		AgentConversation conversation = new AgentConversation(credentials, prompt, initialContext, initialImages);
+	public AgentConversation start(AgentCredentials credentials, String prompt, String initialContext, List<AgentImageAttachment> initialImages, AgentConversationRestore restore) throws Exception {
+		AgentConversation conversation = new AgentConversation(credentials, prompt, initialContext, initialImages, restore.note());
+		if (restore.hasClaudeCompactedMessages()) {
+			for (JsonElement element : restore.claudeCompactedMessagesCopy()) {
+				conversation.claudeMessages().add(element);
+			}
+		}
 		JsonObject user = new JsonObject();
 		user.addProperty("role", "user");
 		user.add("content", userContent(
 				initialUserInput(conversation),
 				initialImages));
 		conversation.claudeMessages().add(user);
+		conversation.markInitialInputSent();
 		return conversation;
 	}
 
@@ -147,9 +153,17 @@ public final class ClaudeMessagesProvider implements AgentModelProvider {
 
 	private static String initialUserInput(AgentConversation conversation) {
 		return conversation.initialContext()
+				+ restoreNote(conversation)
 				+ "\n\n<user_request>\n"
 				+ conversation.prompt()
 				+ "\n</user_request>";
+	}
+
+	private static String restoreNote(AgentConversation conversation) {
+		if (conversation.restoreNote().isBlank()) {
+			return "";
+		}
+		return "\n\n<conversation_restore>\n" + conversation.restoreNote() + "\n</conversation_restore>";
 	}
 
 	private static JsonArray userContent(String text, List<AgentImageAttachment> images) throws IOException {

@@ -32,6 +32,7 @@ import com.tico.mineagent.geometry.GeometryParameterParser;
 import com.tico.mineagent.geometry.GeometryParameterParser.ParsedBlockPos;
 import com.tico.mineagent.geometry.GeometryParameterParser.ParsedDouble;
 import com.tico.mineagent.geometry.GeometryParameterParser.ParsedInt;
+import com.tico.mineagent.network.MineAgentNetworking;
 import com.tico.mineagent.sandbox.SandboxSession;
 import com.tico.mineagent.sandbox.SandboxSessions;
 
@@ -129,7 +130,7 @@ public final class MineAgentGeometryCommands {
 		ParsedBlockPos pos = GeometryParameterParser.parseBlockPos(context.getSource(), session, StringArgumentType.getString(context, "pos"));
 		session.setAnchor(name, pos.pos());
 		sendWarnings(player, pos.warnings());
-		player.sendSystemMessage(Component.literal("MineAgent anchor @" + name.toLowerCase() + " set to " + format(pos.pos()) + "."));
+		MineAgentNetworking.sendAgentLog(player, "ui", "MineAgent anchor @" + name.toLowerCase() + " set to " + format(pos.pos()) + ".");
 		return 1;
 	}
 
@@ -137,12 +138,12 @@ public final class MineAgentGeometryCommands {
 		ServerPlayer player = context.getSource().getPlayerOrException();
 		SandboxSession session = SandboxSessions.get(player);
 		if (session.anchors().isEmpty()) {
-			player.sendSystemMessage(Component.literal("MineAgent has no coordinate anchors."));
+			MineAgentNetworking.sendAgentLog(player, "ui", "MineAgent has no coordinate anchors.");
 			return 1;
 		}
 
 		for (Map.Entry<String, BlockPos> entry : session.anchors().entrySet()) {
-			player.sendSystemMessage(Component.literal("@" + entry.getKey() + " = " + format(entry.getValue())));
+			MineAgentNetworking.sendAgentLog(player, "ui", "@" + entry.getKey() + " = " + format(entry.getValue()));
 		}
 		return session.anchors().size();
 	}
@@ -269,17 +270,17 @@ public final class MineAgentGeometryCommands {
 	}
 
 	private static void sendResult(ServerPlayer player, String action, GeometryEditResult result) {
-		player.sendSystemMessage(Component.literal(action + ": changed " + result.changed()
+		MineAgentNetworking.sendAgentLog(player, "ui", action + ": changed " + result.changed()
 				+ " block(s), considered " + result.candidates()
 				+ ", unchanged " + result.unchanged()
 				+ ", clipped outside sandbox " + result.skippedOutsideSandbox()
-				+ ", clipped outside world " + result.skippedOutsideWorld() + "."));
+				+ ", clipped outside world " + result.skippedOutsideWorld() + ".");
 		sendWarnings(player, result.warnings());
 	}
 
 	private static void sendWarnings(ServerPlayer player, List<String> warnings) {
 		for (String warning : warnings) {
-			player.sendSystemMessage(Component.literal("MineAgent warning: " + warning));
+			MineAgentNetworking.sendAgentLog(player, "warn", "MineAgent warning: " + warning);
 		}
 	}
 

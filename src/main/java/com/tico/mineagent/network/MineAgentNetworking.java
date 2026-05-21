@@ -16,10 +16,15 @@ import net.minecraft.server.level.ServerPlayer;
 
 import com.tico.mineagent.agent.AgentConfigStore;
 import com.tico.mineagent.agent.AgentCredentials;
+import com.tico.mineagent.agent.AgentLogBuffer;
 import com.tico.mineagent.agent.AgentPlanStates;
 import com.tico.mineagent.agent.AgentProviderType;
 import com.tico.mineagent.agent.AgentRuntime;
+import com.tico.mineagent.project.MineAgentProjectStore;
 import com.tico.mineagent.raycast.RaycastMode;
+import com.tico.mineagent.sandbox.SandboxPermissionMode;
+import com.tico.mineagent.sandbox.SandboxSession;
+import com.tico.mineagent.sandbox.SandboxSessions;
 
 public final class MineAgentNetworking {
 	private static final AtomicInteger NEXT_RAYCAST_REQUEST_ID = new AtomicInteger();
@@ -39,6 +44,7 @@ public final class MineAgentNetworking {
 		PayloadTypeRegistry.playS2C().register(AgentUiLogPayload.ID, AgentUiLogPayload.CODEC);
 		PayloadTypeRegistry.playS2C().register(AgentEditBoundsPayload.ID, AgentEditBoundsPayload.CODEC);
 		PayloadTypeRegistry.playS2C().register(AgentClientSyncRequestPayload.ID, AgentClientSyncRequestPayload.CODEC);
+		PayloadTypeRegistry.playS2C().register(WebUiOpenPayload.ID, WebUiOpenPayload.CODEC);
 		PayloadTypeRegistry.playS2C().register(RaycastRequestPayload.ID, RaycastRequestPayload.CODEC);
 		PayloadTypeRegistry.playS2C().register(GpuCaptureRequestPayload.ID, GpuCaptureRequestPayload.CODEC);
 		PayloadTypeRegistry.playC2S().register(AgentClientSyncAckPayload.ID, AgentClientSyncAckPayload.CODEC);
@@ -48,6 +54,8 @@ public final class MineAgentNetworking {
 		PayloadTypeRegistry.playC2S().register(AgentUiStartPayload.ID, AgentUiStartPayload.CODEC);
 		PayloadTypeRegistry.playC2S().register(AgentUiStopPayload.ID, AgentUiStopPayload.CODEC);
 		PayloadTypeRegistry.playC2S().register(AgentUiContinuePayload.ID, AgentUiContinuePayload.CODEC);
+		PayloadTypeRegistry.playC2S().register(AgentSandboxPermissionPayload.ID, AgentSandboxPermissionPayload.CODEC);
+		PayloadTypeRegistry.playC2S().register(AgentSandboxExpansionReplyPayload.ID, AgentSandboxExpansionReplyPayload.CODEC);
 	}
 
 	public static void registerServerReceivers() {
@@ -55,6 +63,8 @@ public final class MineAgentNetworking {
 		ServerPlayNetworking.registerGlobalReceiver(AgentUiStartPayload.ID, MineAgentNetworking::handleStart);
 		ServerPlayNetworking.registerGlobalReceiver(AgentUiStopPayload.ID, MineAgentNetworking::handleStop);
 		ServerPlayNetworking.registerGlobalReceiver(AgentUiContinuePayload.ID, MineAgentNetworking::handleContinue);
+		ServerPlayNetworking.registerGlobalReceiver(AgentSandboxPermissionPayload.ID, MineAgentNetworking::handleSandboxPermission);
+		ServerPlayNetworking.registerGlobalReceiver(AgentSandboxExpansionReplyPayload.ID, MineAgentNetworking::handleSandboxExpansionReply);
 		ServerPlayNetworking.registerGlobalReceiver(AgentClientSyncAckPayload.ID, MineAgentNetworking::handleClientSyncAck);
 		ServerPlayNetworking.registerGlobalReceiver(RaycastResultPayload.ID, MineAgentNetworking::handleRaycastResult);
 		ServerPlayNetworking.registerGlobalReceiver(GpuCaptureResultPayload.ID, MineAgentNetworking::handleGpuCaptureResult);
@@ -73,11 +83,18 @@ public final class MineAgentNetworking {
 		player.sendSystemMessage(Component.literal("MineAgent UI is unavailable because this client did not register the UI channel."));
 	}
 
+	public static void openWebUi(ServerPlayer player, String url) {
+		if (ServerPlayNetworking.canSend(player, WebUiOpenPayload.ID)) {
+			ServerPlayNetworking.send(player, new WebUiOpenPayload(url));
+		}
+	}
+
 	public static void sendAgentLog(ServerPlayer player, String level, String message) {
 		sendAgentLog(player, level, message, "");
 	}
 
 	public static void sendAgentLog(ServerPlayer player, String level, String message, String detail) {
+		AgentLogBuffer.add(player, level, message, detail);
 		player.sendSystemMessage(Component.literal(message));
 		if (ServerPlayNetworking.canSend(player, AgentUiLogPayload.ID)) {
 			ServerPlayNetworking.send(player, new AgentUiLogPayload(level, message, AgentRuntime.instance().status(player), detail));
@@ -91,14 +108,18 @@ public final class MineAgentNetworking {
 	}
 
 	public static void showAgentEditBounds(ServerPlayer player, BlockPos min, BlockPos max, String label) {
+		showAgentEditBounds(player, min, max, label, "edit");
+	}
+
+	public static void showAgentEditBounds(ServerPlayer player, BlockPos min, BlockPos max, String label, String style) {
 		if (ServerPlayNetworking.canSend(player, AgentEditBoundsPayload.ID)) {
-			ServerPlayNetworking.send(player, new AgentEditBoundsPayload(true, min, max, label));
+			ServerPlayNetworking.send(player, new AgentEditBoundsPayload(true, min, max, label, style));
 		}
 	}
 
 	public static void clearAgentEditBounds(ServerPlayer player) {
 		if (ServerPlayNetworking.canSend(player, AgentEditBoundsPayload.ID)) {
-			ServerPlayNetworking.send(player, new AgentEditBoundsPayload(false, BlockPos.ZERO, BlockPos.ZERO, ""));
+			ServerPlayNetworking.send(player, new AgentEditBoundsPayload(false, BlockPos.ZERO, BlockPos.ZERO, "", ""));
 		}
 	}
 
@@ -245,8 +266,28 @@ public final class MineAgentNetworking {
 			sendAgentLog(player, "error", "MineAgent start rejected: prompt must not be blank.");
 			return;
 		}
+		String requestedProjectId = payload.projectId().trim();
+		boolean continueProject = payload.continueProject();
+		if (continueProject && requestedProjectId.isBlank()) {
+			sendAgentLog(player, "error", "MineAgent continue rejected: choose a project id explicitly before continuing a project.");
+			sendAgentState(player);
+			return;
+		}
+		try {
+			SandboxSession sandbox = SandboxSessions.get(player);
+			if (!requestedProjectId.isBlank()) {
+				MineAgentProjectStore.select(player, sandbox, requestedProjectId, "");
+				sendAgentLog(player, "ok", "MineAgent active project set to " + sandbox.activeProjectId() + ".");
+			} else {
+				MineAgentProjectStore.ensureActiveProject(player, sandbox);
+			}
+		} catch (Exception exception) {
+			sendAgentLog(player, "error", "MineAgent start rejected: project selection failed: " + exception.getMessage());
+			sendAgentState(player);
+			return;
+		}
 
-		AgentRuntime.StartResult result = AgentRuntime.instance().start(player, provider, prompt, registryAccess);
+		AgentRuntime.StartResult result = AgentRuntime.instance().start(player, provider, prompt, registryAccess, continueProject);
 		String level = result.status() == AgentRuntime.StartStatus.STARTED ? "ok" : "error";
 		sendAgentLog(player, level, result.message());
 		sendAgentState(player);
@@ -279,6 +320,38 @@ public final class MineAgentNetworking {
 		sendAgentState(player);
 	}
 
+	private static void handleSandboxPermission(AgentSandboxPermissionPayload payload, ServerPlayNetworking.Context context) {
+		ServerPlayer player = context.player();
+		if (!hasMineAgentPermission(player)) {
+			sendAgentLog(player, "error", "MineAgent UI request rejected: permission level 2 is required.");
+			return;
+		}
+
+		SandboxPermissionMode mode = SandboxPermissionMode.byId(payload.mode());
+		if (mode == null) {
+			sendAgentLog(player, "error", "Unknown sandbox permission mode: " + payload.mode());
+			return;
+		}
+
+		SandboxSession sandbox = SandboxSessions.get(player);
+		sandbox.setPermissionMode(mode);
+		sendAgentLog(player, "ok", "Sandbox permission mode set to " + mode.label() + ".");
+		sendAgentState(player);
+	}
+
+	private static void handleSandboxExpansionReply(AgentSandboxExpansionReplyPayload payload, ServerPlayNetworking.Context context) {
+		ServerPlayer player = context.player();
+		if (!hasMineAgentPermission(player)) {
+			sendAgentLog(player, "error", "MineAgent UI request rejected: permission level 2 is required.");
+			return;
+		}
+
+		if (!AgentRuntime.instance().resolveSandboxExpansion(player, payload.approve())) {
+			sendAgentLog(player, "warn", "MineAgent has no pending sandbox expansion request.");
+			sendAgentState(player);
+		}
+	}
+
 	private static void handleClientSyncAck(AgentClientSyncAckPayload payload, ServerPlayNetworking.Context context) {
 		CompletableFuture<Boolean> future = PENDING_CLIENT_SYNCS.remove(payload.requestId());
 		if (future != null) {
@@ -308,6 +381,7 @@ public final class MineAgentNetworking {
 		Optional<AgentCredentials> configured = AgentConfigStore.configured(player);
 		String providerId = configured.map(credentials -> credentials.provider().id()).orElse("openai");
 		String model = configured.map(AgentCredentials::model).orElse("");
+		SandboxSession sandbox = SandboxSessions.get(player);
 		return new AgentUiStatePayload(
 				openScreen,
 				configured.isPresent(),
@@ -316,6 +390,10 @@ public final class MineAgentNetworking {
 				AgentRuntime.instance().status(player),
 				AgentRuntime.instance().isAwaitingApproval(player),
 				AgentRuntime.instance().completedSteps(player),
+				sandbox.activeProjectId(),
+				sandbox.permissionMode().id(),
+				AgentRuntime.instance().isAwaitingSandboxExpansion(player),
+				AgentRuntime.instance().sandboxExpansionSummary(player),
 				AgentPlanStates.snapshot(player).toJsonString());
 	}
 

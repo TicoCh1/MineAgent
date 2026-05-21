@@ -223,7 +223,7 @@ public final class MineAgentMcpServer {
 		serverInfo.addProperty("name", "mineagent");
 		serverInfo.addProperty("version", "1.0.0");
 		result.add("serverInfo", serverInfo);
-		result.addProperty("instructions", "MineAgent exposes Minecraft sandboxed building tools plus small read-only resources. Use mineagent_block_palette_query for palette search. The built-in MineAgent host enforces screenshot cadence; external MCP hosts can call capture tools but cadence is not enforced yet.");
+		result.addProperty("instructions", "MineAgent exposes Minecraft sandboxed building tools plus small read-only resources. Project/design resources are scoped to the active target player's UUID; hosts should read projects://index and select an active project before design work. Use mineagent_block_palette_query for palette search. The built-in MineAgent host enforces screenshot cadence; external MCP hosts can call capture tools but cadence is not enforced yet.");
 		return result;
 	}
 
@@ -300,7 +300,18 @@ public final class MineAgentMcpServer {
 
 	private JsonObject resourceTemplatesList() {
 		JsonObject result = new JsonObject();
-		result.add("resourceTemplates", new JsonArray());
+		JsonArray templates = new JsonArray();
+		templates.add(resourceTemplate(
+				"design://features/{feature_id}.md",
+				"design_feature_file",
+				"MineAgent feature markdown file",
+				"Read one safe MineAgent feature markdown file from the current player's active-project design/features directory."));
+		templates.add(resourceTemplate(
+				"design://images/{image_name}.png",
+				"design_image_file",
+				"MineAgent design image file",
+				"Read one safe MineAgent design image from the current player's active-project design/images directory as JSON metadata plus base64."));
+		result.add("resourceTemplates", templates);
 		return result;
 	}
 
@@ -356,7 +367,17 @@ public final class MineAgentMcpServer {
 				return resource;
 			}
 		}
-		return null;
+		return MineAgentMcpResources.dynamic(uri);
+	}
+
+	private static JsonObject resourceTemplate(String uriTemplate, String name, String title, String description) {
+		JsonObject object = new JsonObject();
+		object.addProperty("uriTemplate", uriTemplate);
+		object.addProperty("name", name);
+		object.addProperty("title", title);
+		object.addProperty("description", description);
+		object.addProperty("mimeType", "application/json");
+		return object;
 	}
 
 	private synchronized ActiveSession requireSession() {

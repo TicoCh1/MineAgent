@@ -24,8 +24,12 @@ public final class OpenAiResponsesProvider implements AgentModelProvider {
 			.build();
 
 	@Override
-	public AgentConversation start(AgentCredentials credentials, String prompt, String initialContext, List<AgentImageAttachment> initialImages) {
-		return new AgentConversation(credentials, prompt, initialContext, initialImages);
+	public AgentConversation start(AgentCredentials credentials, String prompt, String initialContext, List<AgentImageAttachment> initialImages, AgentConversationRestore restore) {
+		AgentConversation conversation = new AgentConversation(credentials, prompt, initialContext, initialImages, restore.note());
+		if (restore.hasOpenAiPreviousResponseId()) {
+			conversation.setPreviousOpenAiResponseId(restore.openAiPreviousResponseId());
+		}
+		return conversation;
 	}
 
 	@Override
@@ -42,7 +46,10 @@ public final class OpenAiResponsesProvider implements AgentModelProvider {
 		body.add("include", include);
 
 		JsonArray input = new JsonArray();
-		if (conversation.previousOpenAiResponseId() == null) {
+		if (conversation.previousOpenAiResponseId() != null) {
+			body.addProperty("previous_response_id", conversation.previousOpenAiResponseId());
+		}
+		if (!conversation.initialInputSent()) {
 			JsonObject user = new JsonObject();
 			user.addProperty("role", "user");
 			user.add("content", userContent(
@@ -50,7 +57,6 @@ public final class OpenAiResponsesProvider implements AgentModelProvider {
 					conversation.initialImages()));
 			input.add(user);
 		} else {
-			body.addProperty("previous_response_id", conversation.previousOpenAiResponseId());
 			for (AgentToolResult result : toolResults) {
 				JsonObject output = new JsonObject();
 				output.addProperty("type", "function_call_output");
@@ -71,6 +77,7 @@ public final class OpenAiResponsesProvider implements AgentModelProvider {
 		runLog.providerRequest("openai", redactedForLog(body));
 		JsonObject response = send(conversation.credentials().apiKey(), body, runLog);
 		conversation.setPreviousOpenAiResponseId(requiredString(response, "id"));
+		conversation.markInitialInputSent();
 		return parseTurn(response);
 	}
 
@@ -137,9 +144,17 @@ public final class OpenAiResponsesProvider implements AgentModelProvider {
 
 	private static String initialUserInput(AgentConversation conversation) {
 		return conversation.initialContext()
+				+ restoreNote(conversation)
 				+ "\n\n<user_request>\n"
 				+ conversation.prompt()
 				+ "\n</user_request>";
+	}
+
+	private static String restoreNote(AgentConversation conversation) {
+		if (conversation.restoreNote().isBlank()) {
+			return "";
+		}
+		return "\n\n<conversation_restore>\n" + conversation.restoreNote() + "\n</conversation_restore>";
 	}
 
 	private static JsonArray userContent(String text, List<AgentImageAttachment> images) throws IOException {
